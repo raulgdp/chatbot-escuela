@@ -74,7 +74,7 @@ def load_logo(path):
         return None
 logo1 = load_logo("data/logo2.png")
 
-if logo:
+if logo1:
     st.sidebar.image(f"data:image/png;base64,{logo1}", width=120)
         
 
