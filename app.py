@@ -11,10 +11,7 @@ from qdrant_client import QdrantClient
 # ═════════════════════════════════════
 # CONFIG
 # ═════════════════════════════════════
-VERSION = "v1.0.5 RERANK + FIX UI"
-st.sidebar.write("🧪 VERSION:", VERSION)
 
-st.sidebar.write("🧪 VERSION:", VERSION)
 st.set_page_config(
     page_title="ChatAcredita PRO",
     layout="wide",
@@ -61,7 +58,7 @@ header {visibility:hidden;}
 
 st.markdown("""
 <div class="custom-header">
-🎓 ChatAcredita PRO — Universidad del Valle
+🎓 ChatAcredita PRO — Escuela de Ingeniría de Sistemas y Comptación (EISC)
 </div>
 """, unsafe_allow_html=True)
 
@@ -75,6 +72,11 @@ def load_logo(path):
             return base64.b64encode(f.read()).decode()
     except:
         return None
+logo1 = load_logo("data/logo2.png")
+
+if logo:
+    st.sidebar.image(f"data:image/png;base64,{logo1}", width=120
+        
 
 logo = load_logo("data/univalle_logo.png")
 
@@ -225,17 +227,7 @@ def run_rag(query):
 
 left, center = st.columns([1,3])
 
-# PANEL IZQUIERDO
-with left:
-    st.markdown("## 🧰 Sistema")
-    st.success("RAG activo")
-    st.success("Vector search")
 
-    st.markdown("---")
-    st.markdown("## 📊 Estado")
-
-    st.metric("Latencia", st.session_state.metrics["latency"])
-    st.metric("F1", st.session_state.metrics["f1_score"])
 
 # CHAT
 with center:
