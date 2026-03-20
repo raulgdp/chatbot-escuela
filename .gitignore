@@ -1,0 +1,30 @@
+# Archivos sensibles - ¡NUNCA subir a GitHub!
+.streamlit/secrets.toml
+*.env
+.env
+
+# Entornos virtuales
+venv/
+env/
+.venv/
+ENV/
+
+# Archivos temporales Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.ipynb_checkpoints/
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Datos grandes (opcional - si vectorstore es muy pesado)
+# data/vectorstore/*.index
+# data/vectorstore/*.bin
