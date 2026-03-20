@@ -75,7 +75,7 @@ def load_logo(path):
 logo1 = load_logo("data/logo2.png")
 
 if logo:
-    st.sidebar.image(f"data:image/png;base64,{logo1}", width=120)s
+    st.sidebar.image(f"data:image/png;base64,{logo1}", width=120)
         
 
 logo = load_logo("data/univalle_logo.png")
