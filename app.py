@@ -1,5 +1,5 @@
 # ═════════════════════════════════════
-# ChatAcredita PRO — FIX SIDEBAR + LLM
+# ChatAcredita PRO — FIX UI + SCROLL
 # ═════════════════════════════════════
 
 import streamlit as st
@@ -15,14 +15,14 @@ from qdrant_client import QdrantClient
 st.set_page_config(
     page_title="ChatAcredita PRO",
     layout="wide",
-    initial_sidebar_state="expanded"  # 🔥 IMPORTANTE
+    initial_sidebar_state="expanded"
 )
 
 COLLECTION_NAME = "acreditacion"
 TOP_K = 3
 
 # ═════════════════════════════════════
-# CSS FIX (NO BLOQUEA SIDEBAR)
+# CSS + SCROLL
 # ═════════════════════════════════════
 
 st.markdown("""
@@ -44,12 +44,12 @@ header {visibility:hidden;}
     font-weight:600;
 }
 
-/* 🔥 IMPORTANTE: no tapar sidebar */
+/* Sidebar visible */
 [data-testid="stSidebar"] {
     z-index: 2000;
 }
 
-/* padding correcto */
+/* Ajuste del contenido */
 .main {
     padding-top:70px;
 }
@@ -58,12 +58,12 @@ header {visibility:hidden;}
 
 st.markdown("""
 <div class="custom-header">
-🎓 ChatAcredita PRO — Escuela de Ingeniría de Sistemas y Comptación (EISC)
+🎓 ChatAcredita PRO — Escuela de Ingeniería de Sistemas y Computación
 </div>
 """, unsafe_allow_html=True)
 
 # ═════════════════════════════════════
-# LOGO
+# LOGOS
 # ═════════════════════════════════════
 
 def load_logo(path):
@@ -72,19 +72,17 @@ def load_logo(path):
             return base64.b64encode(f.read()).decode()
     except:
         return None
-logo1 = load_logo("data/logo2.png")
 
+logo1 = load_logo("data/logo2.png")
 if logo1:
     st.sidebar.image(f"data:image/png;base64,{logo1}", width=120)
-        
 
-logo = load_logo("data/univalle_logo.png")
-
-if logo:
-    st.sidebar.image(f"data:image/png;base64,{logo}", width=120)
+logo2 = load_logo("data/univalle_logo.png")
+if logo2:
+    st.sidebar.image(f"data:image/png;base64,{logo2}", width=120)
 
 # ═════════════════════════════════════
-# SESSION STATE
+# SESSION
 # ═════════════════════════════════════
 
 if "messages" not in st.session_state:
@@ -94,7 +92,7 @@ if "metrics" not in st.session_state:
     st.session_state.metrics = {"latency":0,"f1_score":0}
 
 # ═════════════════════════════════════
-# SIDEBAR (AHORA SIEMPRE VISIBLE)
+# SIDEBAR
 # ═════════════════════════════════════
 
 st.sidebar.title("⚙️ Configuración")
@@ -106,7 +104,6 @@ model_option = st.sidebar.selectbox(
 )
 
 st.sidebar.markdown("---")
-
 st.sidebar.markdown("## 📊 Métricas")
 
 c1, c2 = st.sidebar.columns(2)
@@ -121,12 +118,6 @@ def normalize_text(text):
     text = unicodedata.normalize("NFD", text)
     text = "".join(c for c in text if unicodedata.category(c) != "Mn")
     return " ".join(text.lower().split())
-
-def clean_json(text):
-    try:
-        return json.loads(text)
-    except:
-        return {}
 
 def get_secret(key, default=None):
     try:
@@ -173,7 +164,7 @@ def vector_search(query):
     return [r.payload["text"] for r in res]
 
 # ═════════════════════════════════════
-# F1 SCORE
+# MÉTRICA F1
 # ═════════════════════════════════════
 
 def compute_f1(answer, context):
@@ -195,16 +186,16 @@ def compute_f1(answer, context):
 # LLM
 # ═════════════════════════════════════
 
-def llm(prompt, temp=0):
+def llm(prompt):
     r = client.chat.completions.create(
         model=model_option,
         messages=[{"role":"user","content":prompt}],
-        temperature=temp
+        temperature=0.2
     )
     return r.choices[0].message.content
 
 # ═════════════════════════════════════
-# RAG SIMPLE
+# RAG
 # ═════════════════════════════════════
 
 def run_rag(query):
@@ -214,7 +205,7 @@ def run_rag(query):
     docs = vector_search(query)
     context = "\n\n".join(docs)
 
-    answer = llm(f"Responde con este contexto:\n{context}\nPregunta:{query}",0.2)
+    answer = llm(f"Responde SOLO con el contexto:\n{context}\nPregunta:{query}")
 
     latency = round(time.time()-start,2)
     f1 = compute_f1(answer, context)
@@ -222,14 +213,11 @@ def run_rag(query):
     return answer, latency, f1
 
 # ═════════════════════════════════════
-# LAYOUT
+# LAYOUT (CHAT MÁS A LA IZQUIERDA)
 # ═════════════════════════════════════
 
-left, center = st.columns([1,3])
+center = st.container()
 
-
-
-# CHAT
 with center:
 
     st.title("🎓 ChatAcredita PRO")
@@ -258,3 +246,18 @@ with center:
 
         st.session_state.messages.append({"role":"assistant","content":answer})
         st.rerun()
+
+# ═════════════════════════════════════
+# AUTO SCROLL (TIPO CHATGPT)
+# ═════════════════════════════════════
+
+st.markdown("""
+<script>
+setTimeout(function(){
+    window.scrollTo({
+        top: document.body.scrollHeight,
+        behavior: 'smooth'
+    });
+}, 400);
+</script>
+""", unsafe_allow_html=True)
