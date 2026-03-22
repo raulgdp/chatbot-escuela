@@ -1,6 +1,5 @@
 # ═════════════════════════════════════
-# ChatTesis PRO — FINAL PROFESIONAL
-# Multi-Agent + UI Institucional
+# ChatTesis PRO — FINAL CON AVATAR ANIMADO
 # ═════════════════════════════════════
 
 import streamlit as st
@@ -11,13 +10,11 @@ from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from rank_bm25 import BM25Okapi
 
-
 # ═════════════════════════════════════
-# CONFIG PAGE
+# CONFIG
 # ═════════════════════════════════════
-
 st.set_page_config(
-    page_title="ChatTesis - Univalle",
+    page_title="ChatAcredita - EISC-Univalle (Cali-Colombia)",
     page_icon="🎓",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -26,11 +23,9 @@ st.set_page_config(
 COLLECTION_NAME = "acreditacion"
 TOP_K = 5
 
-
 # ═════════════════════════════════════
 # UTILIDADES
 # ═════════════════════════════════════
-
 def get_base64_image(path):
     try:
         with open(path, "rb") as f:
@@ -56,14 +51,11 @@ def get_secret(key, default=None):
     except:
         return os.getenv(key, default)
 
-
 # ═════════════════════════════════════
-# CSS GLOBAL (HEADER + FOOTER)
+# CSS + ANIMACIÓN
 # ═════════════════════════════════════
-
 st.markdown("""
 <style>
-
 header {visibility:hidden;}
 
 .custom-header {
@@ -82,9 +74,7 @@ header {visibility:hidden;}
     font-size:18px;
 }
 
-.main {
-    padding-top:80px;
-}
+.main { padding-top:80px; }
 
 .logo-float {
     position:fixed;
@@ -106,9 +96,46 @@ header {visibility:hidden;}
     color:#999;
 }
 
+/* 🔥 AVATAR ANIMADO */
+.thinking-avatar {
+    position: fixed;
+    bottom: 90px;
+    right: 20px;
+    background: white;
+    padding: 10px 14px;
+    border-radius: 12px;
+    box-shadow: 0px 4px 12px rgba(0,0,0,0.25);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    z-index:9999;
+}
+
+.avatar-img {
+    border-radius: 50%;
+    width: 38px;
+}
+
+.dot {
+    height: 6px;
+    width: 6px;
+    margin: 0 2px;
+    background-color: #888;
+    border-radius: 50%;
+    display: inline-block;
+    animation: blink 1.4s infinite both;
+}
+
+.dot:nth-child(2) { animation-delay: .2s; }
+.dot:nth-child(3) { animation-delay: .4s; }
+
+@keyframes blink {
+    0% { opacity: .2; }
+    20% { opacity: 1; }
+    100% { opacity: .2; }
+}
 </style>
 """, unsafe_allow_html=True)
-
 
 # HEADER
 st.markdown("""
@@ -116,7 +143,6 @@ st.markdown("""
 🎓 ChatAcredita PRO — EISC (Universidad del Valle)
 </div>
 """, unsafe_allow_html=True)
-
 
 # LOGO
 logo = get_base64_image("data/univalle_logo.png")
@@ -127,11 +153,9 @@ if logo:
     </div>
     """, unsafe_allow_html=True)
 
-
 # ═════════════════════════════════════
 # API
 # ═════════════════════════════════════
-
 client = OpenAI(
     api_key=get_secret("OPENAI_API_KEY"),
     base_url=get_secret("OPENAI_API_BASE")
@@ -142,22 +166,18 @@ qdrant = QdrantClient(
     api_key=get_secret("QDRANT_API_KEY")
 )
 
-
 # ═════════════════════════════════════
 # EMBEDDING
 # ═════════════════════════════════════
-
 @st.cache_resource
 def load_embedder():
     return SentenceTransformer("BAAI/bge-m3")
 
 embedder = load_embedder()
 
-
 # ═════════════════════════════════════
 # BM25
 # ═════════════════════════════════════
-
 @st.cache_resource
 def load_bm25():
     points = qdrant.scroll(collection_name=COLLECTION_NAME, limit=5000, with_payload=True)[0]
@@ -167,13 +187,10 @@ def load_bm25():
 
 bm25, bm25_chunks = load_bm25()
 
-
 # ═════════════════════════════════════
 # HYBRID SEARCH
 # ═════════════════════════════════════
-
 def hybrid_search(query):
-
     emb = embedder.encode([query])[0]
 
     vector = qdrant.query_points(
@@ -196,64 +213,46 @@ def hybrid_search(query):
 
     return list(set(docs))
 
-
 # ═════════════════════════════════════
 # AGENTES
 # ═════════════════════════════════════
-
 class MultiQueryAgent:
     def run(self, query):
-
         prompt = f"""
 Genera 3 reformulaciones.
-
 Pregunta: {query}
-
-JSON:
-{{"queries":["q1","q2","q3"]}}
+JSON: {{"queries":["q1","q2","q3"]}}
 """
-
         r = client.chat.completions.create(
             model="mistralai/mistral-large",
             messages=[{"role":"user","content":prompt}],
             temperature=0
         )
-
         return clean_json(r.choices[0].message.content).get("queries",[query])
-
 
 class AnswerAgent:
     def run(self, query, context):
-
         prompt = f"""
 Responde SOLO con el contexto:
-
 {context}
-
 Pregunta: {query}
 """
-
         r = client.chat.completions.create(
             model="mistralai/mistral-large",
             messages=[{"role":"user","content":prompt}],
             temperature=0.2
         )
-
         return r.choices[0].message.content
 
-
 # ═════════════════════════════════════
-# ORQUESTADOR
+# RAG
 # ═════════════════════════════════════
-
 class RAG:
-
     def __init__(self):
         self.multi = MultiQueryAgent()
         self.answer = AnswerAgent()
 
     def run(self, query):
-
         start = time.time()
 
         queries = self.multi.run(query)
@@ -263,7 +262,6 @@ class RAG:
             docs.extend(hybrid_search(q))
 
         context = "\n\n".join(docs[:TOP_K])
-
         answer = self.answer.run(query, context)
 
         latency = round(time.time() - start, 2)
@@ -277,34 +275,28 @@ class RAG:
             "f_score":round(f,3)
         }
 
-
 rag = RAG()
-
 
 # ═════════════════════════════════════
 # SESSION
 # ═════════════════════════════════════
-
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 if "metrics" not in st.session_state:
     st.session_state.metrics = {"latency":0,"f_score":0}
 
+avatar_base64 = get_base64_image("data/yo.webp")
 
 # ═════════════════════════════════════
 # CHAT
 # ═════════════════════════════════════
-
 st.title("💬 Chat Académico EISC")
 
 for m in st.session_state.messages:
-
     avatar = "👤" if m["role"]=="user" else "🧑‍🏫"
-
     with st.chat_message(m["role"], avatar=avatar):
         st.markdown(m["content"])
-
 
 prompt = st.chat_input("Escribe tu pregunta...")
 
@@ -314,8 +306,34 @@ if prompt:
 
     with st.chat_message("assistant", avatar="🧑‍🏫"):
 
-        with st.spinner("🤖 Analizando..."):
-            answer, metrics = rag.run(prompt)
+        thinking = st.empty()
+
+        # 🧠 THINKING
+        thinking.markdown(f"""
+        <div class="thinking-avatar">
+            <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
+            <span>Analizando</span>
+            <div>
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # 🚀 RAG
+        answer, metrics = rag.run(prompt)
+
+        # ✅ LISTO
+        thinking.markdown(f"""
+        <div class="thinking-avatar" style="border-left:4px solid #4caf50;">
+            <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
+            <span><b>Respuesta lista</b> ✅</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        time.sleep(1.2)
+        thinking.empty()
 
         st.markdown(answer)
 
@@ -324,12 +342,9 @@ if prompt:
 
     st.rerun()
 
-
 # ═════════════════════════════════════
 # SIDEBAR
 # ═════════════════════════════════════
-
-# LOGO GUIA EN SIDEBAR
 col1, col2 = st.sidebar.columns([1, 2])
 
 with col1:
@@ -341,55 +356,19 @@ with col2:
         "<span style='color:gray; font-size:13px;'>Profesor - PLN</span>",
         unsafe_allow_html=True
     )
-st.sidebar.markdown(
-    """
-    <h2 style="
-        color:#b71c1c;
-        font-weight:600;
-        margin-bottom:10px;
-    ">
-    📊 Escuela de Ingeniería de Sistemas y Computación (EISC)
-    </h2>
-    """,
-    unsafe_allow_html=True
-)
-guia_logo = get_base64_image("data/logo2.png")  # <-- guarda tu logo aquí
 
-if guia_logo:
-    st.sidebar.markdown(f"""
-        <div style="text-align:center; margin-bottom:15px;">
-            <img src="data:image/png;base64,{guia_logo}" width="140">
-        </div>
-    """, unsafe_allow_html=True)
-
-st.sidebar.title("📊 Métricas")
-
-st.sidebar.metric("⏱️ Latencias", st.session_state.metrics["latency"])
+st.sidebar.markdown("### 📊 Métricas")
+st.sidebar.metric("⏱️ Latencia", st.session_state.metrics["latency"])
 st.sidebar.metric("🎯 F-Score", st.session_state.metrics["f_score"])
+
 with st.sidebar.expander("🧠 Cómo usar el chatbot", expanded=True):
     st.markdown("""
-    **📌 Cómo preguntar**
-    - Sé claro y específico  
-    - Usa términos como *factor*, *característica*, *indicador*  
-    - Puedes pedir: resumen, comparación o análisis  
+- Sé claro y específico  
+- Usa contexto académico  
+- Puedes pedir análisis o resumen  
+""")
 
-    **💬 Ejemplos**
-    - "Explica el factor 3 del CNA"  
-    - "Resume este documento"  
-    - "¿Qué fortalezas tiene el programa?"  
-
-    **📚 Temas que maneja**
-    - Acreditación CNA  
-    - Autoevaluación  
-    - Documentos PDF institucionales  
-    - Análisis con IA (RAG)  
-    """)
-
-
-# ═════════════════════════════════════
 # FOOTER
-# ═════════════════════════════════════
-
 st.markdown("""
 <div class="footer">
 Universidad del Valle • Grupo GUIA • ChatTesis PRO
