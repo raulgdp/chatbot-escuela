@@ -329,6 +329,16 @@ if prompt:
 # SIDEBAR
 # ═════════════════════════════════════
 
+# LOGO GUIA EN SIDEBAR
+guia_logo = get_base64_image("data/logo_guia.png")  # <-- guarda tu logo aquí
+
+if guia_logo:
+    st.sidebar.markdown(f"""
+        <div style="text-align:center; margin-bottom:15px;">
+            <img src="data:image/png;base64,{guia_logo}" width="120">
+        </div>
+    """, unsafe_allow_html=True)
+
 st.sidebar.title("📊 Métricas")
 
 st.sidebar.metric("⏱️ Latencias", st.session_state.metrics["latency"])
