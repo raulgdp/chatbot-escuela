@@ -1,5 +1,6 @@
 # ═════════════════════════════════════
-# ChatAcredita PRO — FIX UI + SCROLL
+# ChatAcredita PRO — MULTI-AGENT FINAL
+# SCROLL REAL + UI FIX
 # ═════════════════════════════════════
 
 import streamlit as st
@@ -7,108 +8,41 @@ import os, time, json, unicodedata, base64
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
+from rank_bm25 import BM25Okapi
 
-# ═════════════════════════════════════
-# CONFIG
-# ═════════════════════════════════════
-
-st.set_page_config(
-    page_title="ChatAcredita PRO",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(layout="wide")
 
 COLLECTION_NAME = "acreditacion"
-TOP_K = 3
+TOP_K = 5
 
 # ═════════════════════════════════════
-# CSS + SCROLL
+# CSS SCROLL REAL
 # ═════════════════════════════════════
 
 st.markdown("""
 <style>
-header {visibility:hidden;}
 
-.custom-header {
-    position:fixed;
-    top:0;
-    left:0;
-    right:0;
-    height:60px;
-    background:linear-gradient(90deg,#DC143C,#8B0000);
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    z-index:1000;
-    color:white;
-    font-weight:600;
+.chat-container {
+    height: calc(100vh - 180px);
+    overflow-y: auto;
+    padding: 15px;
+    border-radius: 10px;
+    background: #fafafa;
 }
 
-/* Sidebar visible */
-[data-testid="stSidebar"] {
-    z-index: 2000;
+section[data-testid="stChatInput"] {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: white;
+    padding: 10px 20%;
+    border-top: 2px solid #DC143C;
+    z-index: 9999;
 }
 
-/* Ajuste del contenido */
-.main {
-    padding-top:70px;
-}
 </style>
 """, unsafe_allow_html=True)
-
-st.markdown("""
-<div class="custom-header">
-🎓 ChatAcredita PRO — Escuela de Ingeniería de Sistemas y Computación
-</div>
-""", unsafe_allow_html=True)
-
-# ═════════════════════════════════════
-# LOGOS
-# ═════════════════════════════════════
-
-def load_logo(path):
-    try:
-        with open(path,"rb") as f:
-            return base64.b64encode(f.read()).decode()
-    except:
-        return None
-
-logo1 = load_logo("data/logo2.png")
-if logo1:
-    st.sidebar.image(f"data:image/png;base64,{logo1}", width=120)
-
-logo2 = load_logo("data/univalle_logo.png")
-if logo2:
-    st.sidebar.image(f"data:image/png;base64,{logo2}", width=120)
-
-# ═════════════════════════════════════
-# SESSION
-# ═════════════════════════════════════
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-if "metrics" not in st.session_state:
-    st.session_state.metrics = {"latency":0,"f1_score":0}
-
-# ═════════════════════════════════════
-# SIDEBAR
-# ═════════════════════════════════════
-
-st.sidebar.title("⚙️ Configuración")
-
-model_option = st.sidebar.selectbox(
-    "Modelo LLM",
-    ["gpt-4o-mini", "gpt-4o", "mistralai/mistral-large"],
-    index=0
-)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("## 📊 Métricas")
-
-c1, c2 = st.sidebar.columns(2)
-c1.metric("⚡ Latencia", st.session_state.metrics["latency"])
-c2.metric("🎯 F1", st.session_state.metrics["f1_score"])
 
 # ═════════════════════════════════════
 # UTILIDADES
@@ -118,6 +52,13 @@ def normalize_text(text):
     text = unicodedata.normalize("NFD", text)
     text = "".join(c for c in text if unicodedata.category(c) != "Mn")
     return " ".join(text.lower().split())
+
+def clean_json(text):
+    text = text.replace("```json","").replace("```","")
+    try:
+        return json.loads(text)
+    except:
+        return {}
 
 def get_secret(key, default=None):
     try:
@@ -150,10 +91,10 @@ def load_embedder():
 embedder = load_embedder()
 
 # ═════════════════════════════════════
-# RETRIEVER
+# RETRIEVAL
 # ═════════════════════════════════════
 
-def vector_search(query):
+def search(query):
     emb = embedder.encode([query])[0]
     res = qdrant.query_points(
         collection_name=COLLECTION_NAME,
@@ -164,100 +105,106 @@ def vector_search(query):
     return [r.payload["text"] for r in res]
 
 # ═════════════════════════════════════
-# MÉTRICA F1
+# AGENTES
 # ═════════════════════════════════════
 
-def compute_f1(answer, context):
-    a = set(normalize_text(answer).split())
-    c = set(normalize_text(context).split())
+class PlannerAgent:
+    def run(self, query):
+        return {"tool":"hybrid"}
 
-    if not a or not c:
-        return 0
+class MultiQueryAgent:
+    def run(self, query):
+        return [query, query+" detalle", query+" explicación"]
 
-    p = len(a & c) / len(a)
-    r = len(a & c) / len(c)
+class AnswerAgent:
+    def run(self, query, context):
+        r = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role":"user","content":f"Contexto:\n{context}\nPregunta:{query}"}],
+            temperature=0.2
+        )
+        return r.choices[0].message.content
 
-    if p + r == 0:
-        return 0
-
-    return round(2*(p*r)/(p+r),3)
-
-# ═════════════════════════════════════
-# LLM
-# ═════════════════════════════════════
-
-def llm(prompt):
-    r = client.chat.completions.create(
-        model=model_option,
-        messages=[{"role":"user","content":prompt}],
-        temperature=0.2
-    )
-    return r.choices[0].message.content
+class ReflectionAgent:
+    def run(self, query, context, answer):
+        return "GOOD"
 
 # ═════════════════════════════════════
-# RAG
+# ORQUESTADOR
 # ═════════════════════════════════════
 
-def run_rag(query):
+class RAG:
 
-    start = time.time()
+    def __init__(self):
+        self.multi = MultiQueryAgent()
+        self.answer = AnswerAgent()
 
-    docs = vector_search(query)
-    context = "\n\n".join(docs)
+    def run(self, query):
 
-    answer = llm(f"Responde SOLO con el contexto:\n{context}\nPregunta:{query}")
+        start = time.time()
 
-    latency = round(time.time()-start,2)
-    f1 = compute_f1(answer, context)
+        queries = self.multi.run(query)
 
-    return answer, latency, f1
+        docs = []
+        for q in queries:
+            docs.extend(search(q))
 
-# ═════════════════════════════════════
-# LAYOUT (CHAT MÁS A LA IZQUIERDA)
-# ═════════════════════════════════════
+        context = "\n\n".join(docs[:TOP_K])
 
-center = st.container()
+        answer = self.answer.run(query, context)
 
-with center:
+        latency = round(time.time() - start, 2)
 
-    st.title("🎓 ChatAcredita PRO")
+        return answer, latency
 
-    for m in st.session_state.messages:
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
-
-    prompt = st.chat_input("Pregunta sobre acreditación...")
-
-    if prompt:
-
-        st.session_state.messages.append({"role":"user","content":prompt})
-
-        with st.chat_message("assistant"):
-
-            with st.spinner("🤖 Procesando..."):
-                answer, latency, f1 = run_rag(prompt)
-
-            st.markdown(answer)
-
-            st.session_state.metrics = {
-                "latency":latency,
-                "f1_score":f1
-            }
-
-        st.session_state.messages.append({"role":"assistant","content":answer})
-        st.rerun()
+rag = RAG()
 
 # ═════════════════════════════════════
-# AUTO SCROLL (TIPO CHATGPT)
+# SESSION
+# ═════════════════════════════════════
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# ═════════════════════════════════════
+# LAYOUT
+# ═════════════════════════════════════
+
+st.title("🎓 ChatAcredita PRO")
+
+# CHAT BOX
+st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+
+for m in st.session_state.messages:
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+# INPUT
+prompt = st.chat_input("Pregunta...")
+
+if prompt:
+
+    st.session_state.messages.append({"role":"user","content":prompt})
+
+    answer, latency = rag.run(prompt)
+
+    st.session_state.messages.append({"role":"assistant","content":answer})
+
+    st.rerun()
+
+# ═════════════════════════════════════
+# AUTO SCROLL REAL
 # ═════════════════════════════════════
 
 st.markdown("""
 <script>
-setTimeout(function(){
-    window.scrollTo({
-        top: document.body.scrollHeight,
-        behavior: 'smooth'
-    });
-}, 400);
+setTimeout(function() {
+    const chat = window.parent.document.querySelector('.chat-container');
+    if(chat){
+        chat.scrollTop = chat.scrollHeight;
+    }
+}, 200);
 </script>
 """, unsafe_allow_html=True)
