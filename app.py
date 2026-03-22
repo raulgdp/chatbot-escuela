@@ -1,5 +1,5 @@
 # ═════════════════════════════════════
-# ChatTesis PRO — MULTIAGENTE COMPLETO
+# ChatTesis PRO — MULTIAGENTE + FEEDBACK INTELIGENTE
 # ═════════════════════════════════════
 
 import streamlit as st
@@ -8,9 +8,14 @@ import numpy as np
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
+from rank_bm25 import BM25Okapi
 
 # CONFIG
-st.set_page_config(page_title="ChatAcredita PRO", layout="wide")
+st.set_page_config(
+    page_title="ChatAcredita - EISC-Univalle",
+    page_icon="🎓",
+    layout="wide"
+)
 
 COLLECTION_NAME = "acreditacion"
 FEEDBACK_COLLECTION = "feedback_acreditacion"
@@ -38,18 +43,15 @@ def get_secret(key, default=None):
         return os.getenv(key, default)
 
 # CSS + HEADER
-st.markdown("""
-<style>
+st.markdown("""<style>
 header {visibility:hidden;}
 .custom-header {
-    position:fixed; top:0; left:0; right:0;
-    height:70px; background:#8B0000;
-    display:flex; align-items:center; justify-content:center;
-    color:white; font-weight:600;
-}
-.main { padding-top:80px; }
-</style>
-""", unsafe_allow_html=True)
+position:fixed; top:0; left:0; right:0;
+height:70px; background:#8B0000;
+display:flex; align-items:center; justify-content:center;
+color:white; font-weight:600;}
+.main {padding-top:80px;}
+</style>""", unsafe_allow_html=True)
 
 st.markdown("<div class='custom-header'>🎓 ChatAcredita PRO</div>", unsafe_allow_html=True)
 
@@ -74,8 +76,10 @@ embedder = load_embedder()
 # 🔥 CLASSIFIER AGENT
 class FeedbackClassifierAgent:
     def run(self, text):
+
         prompt = f"""
-Clasifica:
+Clasifica el texto:
+
 1. pregunta
 2. sugerencia
 3. otro
@@ -85,16 +89,18 @@ Texto: {text}
 JSON:
 {{"tipo":"pregunta|sugerencia|otro"}}
 """
+
         r = client.chat.completions.create(
             model="mistralai/mistral-large",
             messages=[{"role":"user","content":prompt}],
             temperature=0
         )
+
         return clean_json(r.choices[0].message.content).get("tipo","pregunta")
 
 classifier = FeedbackClassifierAgent()
 
-# 🔥 RETRIEVAL
+# 🔥 HYBRID SEARCH + FEEDBACK
 def hybrid_search(query):
 
     emb = embedder.encode([query])[0]
@@ -124,7 +130,7 @@ def hybrid_search(query):
     except:
         pass
 
-    return docs
+    return list(set(docs))
 
 # 🔥 RAG
 def run_rag(query):
@@ -149,10 +155,8 @@ def run_rag(query):
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-avatar = get_base64_image("data/yo.webp")
-
 # CHAT
-st.title("💬 Chat Académico")
+st.title("💬 Chat Académico EISC")
 
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
@@ -164,7 +168,7 @@ if prompt:
 
     tipo = classifier.run(prompt)
 
-    # 🔥 SUGERENCIA
+    # 🔥 SUGERENCIA → FEEDBACK
     if tipo == "sugerencia":
 
         emb = embedder.encode([prompt])[0]
@@ -178,7 +182,7 @@ if prompt:
             }]
         )
 
-        st.warning("💡 Sugerencia guardada")
+        st.warning("💡 Sugerencia guardada para mejorar el sistema")
         st.stop()
 
     # 🔥 PREGUNTA → RAG
