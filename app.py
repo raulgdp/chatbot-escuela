@@ -265,7 +265,7 @@ prompt = st.chat_input("Escribe tu pregunta...")
 
 if prompt:
 
-    feedback_triggered = False  # 🔥 NUEVO (NO AFECTA LÓGICA)
+    feedback_triggered = False
 
     st.session_state.messages.append({"role":"user","content":prompt})
 
@@ -287,7 +287,6 @@ if prompt:
 
         answer, metrics = rag.run(prompt)
 
-        # 🔥 AVISO DE RETROALIMENTACIÓN (NUEVO)
         mensaje_feedback = "📊 Sin retroalimentación"
 
         thinking.markdown(f"""
@@ -303,7 +302,9 @@ if prompt:
         time.sleep(1)
         thinking.empty()
 
-        # 🔽 AUTO-SCROLL
+        st.markdown(answer)
+
+        # 🔽 AUTO-SCROLL CORRECTO (DESPUÉS DE LA RESPUESTA)
         st.markdown("""
         <script>
         setTimeout(function() {
@@ -311,11 +312,9 @@ if prompt:
                 top: document.body.scrollHeight,
                 behavior: 'smooth'
             });
-        }, 300);
+        }, 100);
         </script>
         """, unsafe_allow_html=True)
-
-        st.markdown(answer)
 
     st.session_state.messages.append({"role":"assistant","content":answer})
     st.session_state.metrics = metrics
