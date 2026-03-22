@@ -1,5 +1,5 @@
 # ═════════════════════════════════════
-# ChatTesis PRO — RAG + Avatar + Feedback Vectorial
+# ChatTesis PRO — FINAL PRO + HEADER + FEEDBACK
 # ═════════════════════════════════════
 
 import streamlit as st
@@ -12,9 +12,10 @@ from rank_bm25 import BM25Okapi
 
 # CONFIG
 st.set_page_config(
-    page_title="ChatAcredita - EISC-Univalle",
+    page_title="ChatAcredita - EISC-Univalle (Cali-Colombia)",
     page_icon="🎓",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 COLLECTION_NAME = "acreditacion"
@@ -47,17 +48,59 @@ def get_secret(key, default=None):
     except:
         return os.getenv(key, default)
 
-# CSS + ANIMACIÓN
+# ═════════════════════════════════════
+# CSS + HEADER + ANIMACIÓN
+# ═════════════════════════════════════
 st.markdown("""
 <style>
+
 header {visibility:hidden;}
 
+.custom-header {
+    position:fixed;
+    top:0;
+    left:0;
+    right:0;
+    height:70px;
+    background:linear-gradient(90deg,#DC143C,#8B0000);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    z-index:9999;
+    color:white;
+    font-weight:600;
+    font-size:18px;
+}
+
+.main { padding-top:80px; }
+
+.logo-float {
+    position:fixed;
+    top:12px;
+    right:20px;
+    z-index:10000;
+    background:white;
+    border-radius:50%;
+    padding:4px;
+}
+
+.footer {
+    position:fixed;
+    bottom:65px;
+    left:0;
+    right:0;
+    text-align:center;
+    font-size:11px;
+    color:#999;
+}
+
+/* AVATAR */
 .thinking-avatar {
     position: fixed;
     bottom: 90px;
     right: 20px;
     background: white;
-    padding: 10px;
+    padding: 10px 14px;
     border-radius: 12px;
     box-shadow: 0px 4px 12px rgba(0,0,0,0.25);
     display: flex;
@@ -66,24 +109,52 @@ header {visibility:hidden;}
     z-index:9999;
 }
 
-.avatar-img { border-radius:50%; width:38px; }
+.avatar-img {
+    border-radius: 50%;
+    width: 38px;
+}
 
 .dot {
-    height:6px; width:6px;
-    background:#888;
-    border-radius:50%;
-    animation: blink 1.4s infinite;
+    height: 6px;
+    width: 6px;
+    margin: 0 2px;
+    background-color: #888;
+    border-radius: 50%;
+    display: inline-block;
+    animation: blink 1.4s infinite both;
 }
 
+.dot:nth-child(2) { animation-delay: .2s; }
+.dot:nth-child(3) { animation-delay: .4s; }
+
 @keyframes blink {
-    0%{opacity:.2;}
-    20%{opacity:1;}
-    100%{opacity:.2;}
+    0% { opacity: .2; }
+    20% { opacity: 1; }
+    100% { opacity: .2; }
 }
+
 </style>
 """, unsafe_allow_html=True)
 
+# HEADER
+st.markdown("""
+<div class="custom-header">
+🎓 ChatAcredita PRO — EISC (Universidad del Valle)
+</div>
+""", unsafe_allow_html=True)
+
+# LOGO
+logo = get_base64_image("data/univalle_logo.png")
+if logo:
+    st.markdown(f"""
+    <div class="logo-float">
+        <img src="data:image/png;base64,{logo}" width="40">
+    </div>
+    """, unsafe_allow_html=True)
+
+# ═════════════════════════════════════
 # API
+# ═════════════════════════════════════
 client = OpenAI(
     api_key=get_secret("OPENAI_API_KEY"),
     base_url=get_secret("OPENAI_API_BASE")
@@ -118,7 +189,6 @@ def hybrid_search(query):
 
     docs = []
 
-    # Documentos
     vector = qdrant.query_points(
         collection_name=COLLECTION_NAME,
         query=emb.tolist(),
@@ -128,7 +198,6 @@ def hybrid_search(query):
 
     docs += [r.payload["text"] for r in vector]
 
-    # Feedback
     try:
         feedback = qdrant.query_points(
             collection_name=FEEDBACK_COLLECTION,
@@ -138,6 +207,7 @@ def hybrid_search(query):
         ).points
 
         docs += [r.payload["text"] for r in feedback]
+
     except:
         pass
 
@@ -146,7 +216,13 @@ def hybrid_search(query):
 # AGENTES
 class MultiQueryAgent:
     def run(self, query):
-        return [query]
+        prompt = f"Genera 3 reformulaciones de: {query}"
+        r = client.chat.completions.create(
+            model="mistralai/mistral-large",
+            messages=[{"role":"user","content":prompt}],
+            temperature=0
+        )
+        return clean_json(r.choices[0].message.content).get("queries",[query])
 
 class AnswerAgent:
     def run(self, query, context):
@@ -205,9 +281,11 @@ if prompt:
         <div class="thinking-avatar">
             <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
             <span>Analizando...</span>
-            <span class="dot"></span>
-            <span class="dot"></span>
-            <span class="dot"></span>
+            <div>
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -225,7 +303,7 @@ if prompt:
 
         st.markdown(answer)
 
-        # 🔥 FEEDBACK
+        # 🔥 FEEDBACK VECTORIAL
         col1, col2 = st.columns(2)
 
         with col1:
@@ -266,7 +344,11 @@ with col1:
     st.image("data/yo.webp", width=80)
 
 with col2:
-    st.markdown("**Raúl E. Gutiérrez de Piñerez Reyes**")
+    st.markdown(
+        "**Raúl E. Gutiérrez de Piñerez Reyes**\n"
+        "<span style='color:gray; font-size:13px;'>Profesor - PLN</span>",
+        unsafe_allow_html=True
+    )
 
 st.sidebar.markdown("### 📊 Métricas")
 st.sidebar.metric("⏱️ Latencia", st.session_state.metrics["latency"])
@@ -280,7 +362,7 @@ with st.sidebar.expander("🧠 Cómo usar el chatbot", expanded=True):
 
 # FOOTER
 st.markdown("""
-<div style='text-align:center; font-size:11px; color:#999;'>
-Universidad del Valle • Grupo GUIA
+<div class="footer">
+Universidad del Valle • Grupo GUIA • ChatTesis PRO
 </div>
 """, unsafe_allow_html=True)
