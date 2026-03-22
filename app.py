@@ -1,5 +1,5 @@
 # ═════════════════════════════════════
-# ChatTesis PRO — FINAL PRO + HEADER + FEEDBACK
+# ChatTesis PRO — FINAL PRO + FIX LATENCIA + AUTOSCROLL
 # ═════════════════════════════════════
 
 import streamlit as st
@@ -48,12 +48,9 @@ def get_secret(key, default=None):
     except:
         return os.getenv(key, default)
 
-# ═════════════════════════════════════
-# CSS + HEADER + ANIMACIÓN
-# ═════════════════════════════════════
+# CSS + HEADER + AVATAR
 st.markdown("""
 <style>
-
 header {visibility:hidden;}
 
 .custom-header {
@@ -94,7 +91,6 @@ header {visibility:hidden;}
     color:#999;
 }
 
-/* AVATAR */
 .thinking-avatar {
     position: fixed;
     bottom: 90px;
@@ -109,10 +105,7 @@ header {visibility:hidden;}
     z-index:9999;
 }
 
-.avatar-img {
-    border-radius: 50%;
-    width: 38px;
-}
+.avatar-img { border-radius: 50%; width: 38px; }
 
 .dot {
     height: 6px;
@@ -132,7 +125,6 @@ header {visibility:hidden;}
     20% { opacity: 1; }
     100% { opacity: .2; }
 }
-
 </style>
 """, unsafe_allow_html=True)
 
@@ -152,9 +144,7 @@ if logo:
     </div>
     """, unsafe_allow_html=True)
 
-# ═════════════════════════════════════
 # API
-# ═════════════════════════════════════
 client = OpenAI(
     api_key=get_secret("OPENAI_API_KEY"),
     base_url=get_secret("OPENAI_API_BASE")
@@ -165,7 +155,7 @@ qdrant = QdrantClient(
     api_key=get_secret("QDRANT_API_KEY")
 )
 
-# EMBEDDINGS
+# EMBEDDING
 @st.cache_resource
 def load_embedder():
     return SentenceTransformer("BAAI/bge-m3")
@@ -182,7 +172,7 @@ def load_bm25():
 
 bm25, bm25_chunks = load_bm25()
 
-# 🔥 HYBRID SEARCH + FEEDBACK
+# HYBRID SEARCH + FEEDBACK
 def hybrid_search(query):
 
     emb = embedder.encode([query])[0]
@@ -207,7 +197,6 @@ def hybrid_search(query):
         ).points
 
         docs += [r.payload["text"] for r in feedback]
-
     except:
         pass
 
@@ -239,6 +228,9 @@ class RAG:
         self.answer = AnswerAgent()
 
     def run(self, query):
+
+        start = time.time()  # 🔥 FIX LATENCIA
+
         docs = []
         for q in self.multi.run(query):
             docs.extend(hybrid_search(q))
@@ -246,7 +238,9 @@ class RAG:
         context = "\n\n".join(docs[:TOP_K])
         answer = self.answer.run(query, context)
 
-        return answer, {"latency": round(time.time(),2)}
+        latency = round(time.time() - start, 2)
+
+        return answer, {"latency": latency}
 
 rag = RAG()
 
@@ -301,40 +295,23 @@ if prompt:
         time.sleep(1)
         thinking.empty()
 
+        # 🔽 AUTO-SCROLL
+        st.markdown("""
+        <script>
+        setTimeout(function() {
+            window.scrollTo({
+                top: document.body.scrollHeight,
+                behavior: 'smooth'
+            });
+        }, 300);
+        </script>
+        """, unsafe_allow_html=True)
+
         st.markdown(answer)
-
-        # 🔥 FEEDBACK VECTORIAL
-        col1, col2 = st.columns(2)
-
-        with col1:
-            if st.button("👍 Útil"):
-                st.success("Gracias por tu feedback")
-
-        with col2:
-            if st.button("👎 No útil"):
-
-                texto_feedback = f"""
-                Pregunta: {prompt}
-                Respuesta incorrecta: {answer}
-                """
-
-                emb = embedder.encode([texto_feedback])[0]
-
-                try:
-                    qdrant.upsert(
-                        collection_name=FEEDBACK_COLLECTION,
-                        points=[{
-                            "id": str(uuid.uuid4()),
-                            "vector": emb.tolist(),
-                            "payload": {"text": texto_feedback}
-                        }]
-                    )
-                    st.warning("Aprendiendo de esta respuesta...")
-                except:
-                    st.error("Error guardando feedback")
 
     st.session_state.messages.append({"role":"assistant","content":answer})
     st.session_state.metrics = metrics
+
     st.rerun()
 
 # SIDEBAR
@@ -358,6 +335,8 @@ with st.sidebar.expander("🧠 Cómo usar el chatbot", expanded=True):
 - Pregunta sobre acreditación  
 - Usa contexto académico  
 - Puedes pedir análisis  
+- Preguntas sobre el acuerdo 009
+- Preguntas sobre la EISC
 """)
 
 # FOOTER
