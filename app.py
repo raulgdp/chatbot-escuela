@@ -330,7 +330,7 @@ if prompt:
 # ═════════════════════════════════════
 
 # LOGO GUIA EN SIDEBAR
-st.sidebar.image("yo.webp", width=120)
+st.sidebar.image("data/yo.webp", width=120)
 st.sidebar.markdown(
     """
     <h2 style="
