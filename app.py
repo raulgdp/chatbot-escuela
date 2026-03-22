@@ -342,7 +342,7 @@ st.sidebar.markdown(
     """,
     unsafe_allow_html=True
 )
-guia_logo = get_base64_image("data/guia-2.png")  # <-- guarda tu logo aquí
+guia_logo = get_base64_image("data/guia.png")  # <-- guarda tu logo aquí
 
 if guia_logo:
     st.sidebar.markdown(f"""
