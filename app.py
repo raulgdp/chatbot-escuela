@@ -1,5 +1,5 @@
 # ═════════════════════════════════════
-# ChatTesis PRO — MULTIAGENTE VISIBLE + AUTO-MEJORA
+# ChatTesis PRO — FINAL PRO + FIX LATENCIA + AUTOSCROLL
 # ═════════════════════════════════════
 
 import streamlit as st
@@ -42,13 +42,7 @@ def clean_json(text):
     except:
         return {}
 
-def get_secret(key, default=None):
-    try:
-        return st.secrets[key]
-    except:
-        return os.getenv(key, default)
-
-# 🔥 CLASSIFIER NUEVO (NO rompe nada)
+# 🔥 NUEVO (NO ROMPE NADA)
 def classify_feedback(prompt, last_answer=""):
 
     prompt_llm = f"""
@@ -74,23 +68,63 @@ JSON:
 
     return clean_json(r.choices[0].message.content).get("tipo","pregunta")
 
-# CSS (igual)
-st.markdown("""<style>
-header {visibility:hidden;}
-.custom-header {position:fixed;top:0;left:0;right:0;height:70px;
-background:linear-gradient(90deg,#DC143C,#8B0000);
-display:flex;align-items:center;justify-content:center;
-z-index:9999;color:white;font-weight:600;font-size:18px;}
-.main { padding-top:80px; }
-.footer {position:fixed;bottom:65px;left:0;right:0;text-align:center;font-size:11px;color:#999;}
-.thinking-avatar {position: fixed;bottom: 90px;right: 20px;background: white;padding: 10px 14px;
-border-radius: 12px;box-shadow: 0px 4px 12px rgba(0,0,0,0.25);
-display: flex;align-items: center;gap: 10px;z-index:9999;}
-.avatar-img { border-radius: 50%; width: 38px; }
-</style>""", unsafe_allow_html=True)
+def get_secret(key, default=None):
+    try:
+        return st.secrets[key]
+    except:
+        return os.getenv(key, default)
 
-# HEADER
-st.markdown("<div class='custom-header'>🎓 ChatAcredita PRO — EISC</div>", unsafe_allow_html=True)
+# CSS + HEADER + AVATAR (SIN CAMBIOS)
+st.markdown("""
+<style>
+header {visibility:hidden;}
+.custom-header {
+    position:fixed;
+    top:0;
+    left:0;
+    right:0;
+    height:70px;
+    background:linear-gradient(90deg,#DC143C,#8B0000);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    z-index:9999;
+    color:white;
+    font-weight:600;
+    font-size:18px;
+}
+.main { padding-top:80px; }
+.footer {
+    position:fixed;
+    bottom:65px;
+    left:0;
+    right:0;
+    text-align:center;
+    font-size:11px;
+    color:#999;
+}
+.thinking-avatar {
+    position: fixed;
+    bottom: 90px;
+    right: 20px;
+    background: white;
+    padding: 10px 14px;
+    border-radius: 12px;
+    box-shadow: 0px 4px 12px rgba(0,0,0,0.25);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    z-index:9999;
+}
+.avatar-img { border-radius: 50%; width: 38px; }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="custom-header">
+🎓 ChatAcredita PRO — EISC (Universidad del Valle)
+</div>
+""", unsafe_allow_html=True)
 
 # API
 client = OpenAI(
@@ -110,7 +144,7 @@ def load_embedder():
 
 embedder = load_embedder()
 
-# BM25
+# BM25 (SIN CAMBIOS)
 @st.cache_resource
 def load_bm25():
     points = qdrant.scroll(collection_name=COLLECTION_NAME, limit=5000, with_payload=True)[0]
@@ -120,28 +154,50 @@ def load_bm25():
 
 bm25, bm25_chunks = load_bm25()
 
-# SEARCH
+# HYBRID SEARCH (SIN CAMBIOS)
 def hybrid_search(query):
     emb = embedder.encode([query])[0]
     docs = []
-
-    docs += [r.payload["text"] for r in qdrant.query_points(
+    vector = qdrant.query_points(
         collection_name=COLLECTION_NAME,
-        query=emb.tolist(), limit=TOP_K, with_payload=True).points]
+        query=emb.tolist(),
+        limit=TOP_K,
+        with_payload=True
+    ).points
 
+    docs += [r.payload["text"] for r in vector]
     return docs
 
-# RAG
-def run_rag(query):
-    docs = hybrid_search(query)
-    context = "\n\n".join(docs[:TOP_K])
+# AGENTES (SIN CAMBIOS)
+class MultiQueryAgent:
+    def run(self, query):
+        return [query]
 
-    r = client.chat.completions.create(
-        model="mistralai/mistral-large",
-        messages=[{"role":"user","content":f"{context}\n\n{query}"}]
-    )
+class AnswerAgent:
+    def run(self, query, context):
+        prompt = f"Contexto:\n{context}\n\nPregunta: {query}"
+        r = client.chat.completions.create(
+            model="mistralai/mistral-large",
+            messages=[{"role":"user","content":prompt}]
+        )
+        return r.choices[0].message.content
 
-    return r.choices[0].message.content, {"latency":0}
+class RAG:
+    def __init__(self):
+        self.multi = MultiQueryAgent()
+        self.answer = AnswerAgent()
+
+    def run(self, query):
+        start = time.time()
+        docs = []
+        for q in self.multi.run(query):
+            docs.extend(hybrid_search(q))
+        context = "\n\n".join(docs[:TOP_K])
+        answer = self.answer.run(query, context)
+        latency = round(time.time() - start, 2)
+        return answer, {"latency": latency}
+
+rag = RAG()
 
 # SESSION
 if "messages" not in st.session_state:
@@ -160,7 +216,6 @@ prompt = st.chat_input("Escribe tu pregunta...")
 
 if prompt:
 
-    # obtener última respuesta
     last_answer = ""
     for m in reversed(st.session_state.messages):
         if m["role"] == "assistant":
@@ -175,36 +230,47 @@ if prompt:
 
         thinking = st.empty()
 
-        # 🧠
+        # 🧠 Analizando
         thinking.markdown(f"""
         <div class="thinking-avatar">
         <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
         <span>🧠 Analizando</span>
-        </div>""", unsafe_allow_html=True)
+        </div>
+        """, unsafe_allow_html=True)
 
-        time.sleep(0.3)
+        time.sleep(0.4)
 
-        # 🔍
+        # 🔍 Recuperando
         thinking.markdown(f"""
         <div class="thinking-avatar">
         <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
         <span>🔍 Recuperando información</span>
-        </div>""", unsafe_allow_html=True)
+        </div>
+        """, unsafe_allow_html=True)
 
-        answer, metrics = run_rag(prompt)
+        answer, metrics = rag.run(prompt)
 
-        # 🔁 feedback
         if tipo == "retroalimentacion":
 
             thinking.markdown(f"""
             <div class="thinking-avatar">
             <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
             <span>🔁 Corrigiendo respuesta</span>
-            </div>""", unsafe_allow_html=True)
+            </div>
+            """, unsafe_allow_html=True)
+
+            improved_prompt = f"""
+Corrige esta respuesta:
+
+{answer}
+
+Basado en la observación del usuario:
+{prompt}
+"""
 
             r = client.chat.completions.create(
                 model="mistralai/mistral-large",
-                messages=[{"role":"user","content":f"Corrige: {answer} basado en: {prompt}"}]
+                messages=[{"role":"user","content":improved_prompt}]
             )
 
             answer = r.choices[0].message.content
@@ -214,19 +280,39 @@ if prompt:
             <div class="thinking-avatar">
             <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
             <span>✍️ Generando respuesta</span>
-            </div>""", unsafe_allow_html=True)
+            </div>
+            """, unsafe_allow_html=True)
 
-        # FINAL
         thinking.markdown(f"""
         <div class="thinking-avatar" style="border-left:4px solid green;">
         <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
-        <span><b>Respuesta lista</b> ✅</span>
-        </div>""", unsafe_allow_html=True)
+        <span>Respuesta lista ✅</span>
+        </div>
+        """, unsafe_allow_html=True)
 
         time.sleep(1)
         thinking.empty()
 
         st.markdown(answer)
 
+        # AUTO-SCROLL (MISMO)
+        st.markdown("""
+        <script>
+        setTimeout(function() {
+            window.scrollTo({
+                top: document.body.scrollHeight,
+                behavior: 'smooth'
+            });
+        }, 300);
+        </script>
+        """, unsafe_allow_html=True)
+
     st.session_state.messages.append({"role":"assistant","content":answer})
     st.rerun()
+
+# FOOTER
+st.markdown("""
+<div class="footer">
+Universidad del Valle • Grupo GUIA • ChatTesis PRO
+</div>
+""", unsafe_allow_html=True)
