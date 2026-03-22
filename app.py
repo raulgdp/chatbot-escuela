@@ -338,7 +338,7 @@ with col1:
 with col2:
     st.markdown(
         "**Raúl E. Gutiérrez de Piñérez Reyes**\n"
-        "<span style='color:gray; font-size:13px;'>Profesor - EISC</span>",
+        "<span style='color:gray; font-size:13px;'>Profesor - PLN</span>",
         unsafe_allow_html=True
     )
 st.sidebar.markdown(
@@ -366,6 +366,24 @@ st.sidebar.title("📊 Métricas")
 
 st.sidebar.metric("⏱️ Latencias", st.session_state.metrics["latency"])
 st.sidebar.metric("🎯 F-Score", st.session_state.metrics["f_score"])
+with st.sidebar.expander("🧠 Cómo usar el chatbot", expanded=True):
+    st.markdown("""
+    **📌 Cómo preguntar**
+    - Sé claro y específico  
+    - Usa términos como *factor*, *característica*, *indicador*  
+    - Puedes pedir: resumen, comparación o análisis  
+
+    **💬 Ejemplos**
+    - "Explica el factor 3 del CNA"  
+    - "Resume este documento"  
+    - "¿Qué fortalezas tiene el programa?"  
+
+    **📚 Temas que maneja**
+    - Acreditación CNA  
+    - Autoevaluación  
+    - Documentos PDF institucionales  
+    - Análisis con IA (RAG)  
+    """)
 
 
 # ═════════════════════════════════════
