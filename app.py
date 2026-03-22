@@ -1,5 +1,5 @@
 # ═════════════════════════════════════
-# ChatTesis PRO — FINAL PRO + FIX LATENCIA + AUTOSCROLL
+# ChatTesis PRO — FINAL PRO + MULTIAGENTE (SIN ROMPER ESTRUCTURA)
 # ═════════════════════════════════════
 
 import streamlit as st
@@ -42,9 +42,8 @@ def clean_json(text):
     except:
         return {}
 
-# 🔥 NUEVO (NO ROMPE NADA)
+# 🔥 CLASSIFIER (NUEVO)
 def classify_feedback(prompt, last_answer=""):
-
     prompt_llm = f"""
 Contexto:
 Respuesta previa: {last_answer}
@@ -59,13 +58,11 @@ Clasifica:
 JSON:
 {{"tipo":"pregunta|retroalimentacion"}}
 """
-
     r = client.chat.completions.create(
         model="mistralai/mistral-large",
         messages=[{"role":"user","content":prompt_llm}],
         temperature=0
     )
-
     return clean_json(r.choices[0].message.content).get("tipo","pregunta")
 
 def get_secret(key, default=None):
@@ -74,52 +71,35 @@ def get_secret(key, default=None):
     except:
         return os.getenv(key, default)
 
-# CSS + HEADER + AVATAR (SIN CAMBIOS)
+# CSS (igual)
 st.markdown("""
 <style>
 header {visibility:hidden;}
 .custom-header {
-    position:fixed;
-    top:0;
-    left:0;
-    right:0;
+    position:fixed; top:0; left:0; right:0;
     height:70px;
     background:linear-gradient(90deg,#DC143C,#8B0000);
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    z-index:9999;
-    color:white;
-    font-weight:600;
-    font-size:18px;
+    display:flex; align-items:center; justify-content:center;
+    z-index:9999; color:white; font-weight:600;
 }
 .main { padding-top:80px; }
 .footer {
-    position:fixed;
-    bottom:65px;
-    left:0;
-    right:0;
-    text-align:center;
-    font-size:11px;
-    color:#999;
+    position:fixed; bottom:65px; left:0; right:0;
+    text-align:center; font-size:11px; color:#999;
 }
 .thinking-avatar {
-    position: fixed;
-    bottom: 90px;
-    right: 20px;
-    background: white;
-    padding: 10px 14px;
+    position: fixed; bottom: 90px; right: 20px;
+    background: white; padding: 10px 14px;
     border-radius: 12px;
     box-shadow: 0px 4px 12px rgba(0,0,0,0.25);
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    display: flex; align-items: center; gap: 10px;
     z-index:9999;
 }
-.avatar-img { border-radius: 50%; width: 38px; }
+.avatar-img { border-radius:50%; width:38px; }
 </style>
 """, unsafe_allow_html=True)
 
+# HEADER
 st.markdown("""
 <div class="custom-header">
 🎓 ChatAcredita PRO — EISC (Universidad del Valle)
@@ -144,7 +124,7 @@ def load_embedder():
 
 embedder = load_embedder()
 
-# BM25 (SIN CAMBIOS)
+# BM25 (igual)
 @st.cache_resource
 def load_bm25():
     points = qdrant.scroll(collection_name=COLLECTION_NAME, limit=5000, with_payload=True)[0]
@@ -154,25 +134,18 @@ def load_bm25():
 
 bm25, bm25_chunks = load_bm25()
 
-# HYBRID SEARCH (SIN CAMBIOS)
+# SEARCH (igual)
 def hybrid_search(query):
     emb = embedder.encode([query])[0]
-    docs = []
     vector = qdrant.query_points(
         collection_name=COLLECTION_NAME,
         query=emb.tolist(),
         limit=TOP_K,
         with_payload=True
     ).points
+    return [r.payload["text"] for r in vector]
 
-    docs += [r.payload["text"] for r in vector]
-    return docs
-
-# AGENTES (SIN CAMBIOS)
-class MultiQueryAgent:
-    def run(self, query):
-        return [query]
-
+# AGENTES (igual)
 class AnswerAgent:
     def run(self, query, context):
         prompt = f"Contexto:\n{context}\n\nPregunta: {query}"
@@ -184,14 +157,11 @@ class AnswerAgent:
 
 class RAG:
     def __init__(self):
-        self.multi = MultiQueryAgent()
         self.answer = AnswerAgent()
 
     def run(self, query):
         start = time.time()
-        docs = []
-        for q in self.multi.run(query):
-            docs.extend(hybrid_search(q))
+        docs = hybrid_search(query)
         context = "\n\n".join(docs[:TOP_K])
         answer = self.answer.run(query, context)
         latency = round(time.time() - start, 2)
@@ -202,6 +172,8 @@ rag = RAG()
 # SESSION
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "metrics" not in st.session_state:
+    st.session_state.metrics = {"latency":0}
 
 avatar_base64 = get_base64_image("data/yo.webp")
 
@@ -230,7 +202,6 @@ if prompt:
 
         thinking = st.empty()
 
-        # 🧠 Analizando
         thinking.markdown(f"""
         <div class="thinking-avatar">
         <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
@@ -240,7 +211,6 @@ if prompt:
 
         time.sleep(0.4)
 
-        # 🔍 Recuperando
         thinking.markdown(f"""
         <div class="thinking-avatar">
         <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
@@ -251,7 +221,6 @@ if prompt:
         answer, metrics = rag.run(prompt)
 
         if tipo == "retroalimentacion":
-
             thinking.markdown(f"""
             <div class="thinking-avatar">
             <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
@@ -259,22 +228,11 @@ if prompt:
             </div>
             """, unsafe_allow_html=True)
 
-            improved_prompt = f"""
-Corrige esta respuesta:
-
-{answer}
-
-Basado en la observación del usuario:
-{prompt}
-"""
-
             r = client.chat.completions.create(
                 model="mistralai/mistral-large",
-                messages=[{"role":"user","content":improved_prompt}]
+                messages=[{"role":"user","content":f"Corrige: {answer} basado en: {prompt}"}]
             )
-
             answer = r.choices[0].message.content
-
         else:
             thinking.markdown(f"""
             <div class="thinking-avatar">
@@ -295,22 +253,30 @@ Basado en la observación del usuario:
 
         st.markdown(answer)
 
-        # AUTO-SCROLL (MISMO)
-        st.markdown("""
-        <script>
-        setTimeout(function() {
-            window.scrollTo({
-                top: document.body.scrollHeight,
-                behavior: 'smooth'
-            });
-        }, 300);
-        </script>
-        """, unsafe_allow_html=True)
-
     st.session_state.messages.append({"role":"assistant","content":answer})
+    st.session_state.metrics = metrics
     st.rerun()
 
-# FOOTER
+# SIDEBAR (RESTAURADA)
+col1, col2 = st.sidebar.columns([1, 2])
+
+with col1:
+    st.image("data/yo.webp", width=80)
+
+with col2:
+    st.markdown("**Raúl E. Gutiérrez de Piñerez Reyes**")
+
+st.sidebar.markdown("### 📊 Métricas")
+st.sidebar.metric("⏱️ Latencia", st.session_state.metrics["latency"])
+
+with st.sidebar.expander("🧠 Cómo usar el chatbot", expanded=True):
+    st.markdown("""
+- Pregunta sobre acreditación  
+- Usa contexto académico  
+- Puedes pedir análisis  
+""")
+
+# FOOTER (igual)
 st.markdown("""
 <div class="footer">
 Universidad del Valle • Grupo GUIA • ChatTesis PRO
