@@ -113,7 +113,7 @@ header {visibility:hidden;}
 # HEADER
 st.markdown("""
 <div class="custom-header">
-🎓 ChatTesis PRO — Universidad del Valle
+🎓 ChatAcredita PRO — EISC (Universidad del Valle)
 </div>
 """, unsafe_allow_html=True)
 
@@ -330,7 +330,17 @@ if prompt:
 # ═════════════════════════════════════
 
 # LOGO GUIA EN SIDEBAR
-st.sidebar.image("data/yo.webp", width=120)
+col1, col2 = st.sidebar.columns([1, 2])
+
+with col1:
+    st.image("data/yo.webp", width=80)
+
+with col2:
+    st.markdown(
+        "**Raúl E. Gutiérrez de Piñérez Reyes**\n"
+        "<span style='color:gray; font-size:13px;'>Profesor - EISC</span>",
+        unsafe_allow_html=True
+    )
 st.sidebar.markdown(
     """
     <h2 style="
