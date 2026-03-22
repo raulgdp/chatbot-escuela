@@ -330,7 +330,7 @@ if prompt:
 # ═════════════════════════════════════
 
 # LOGO GUIA EN SIDEBAR
-st.session_state["user_avatar"] = "yo.webp"
+st.sidebar.image("yo.webp", width=120)
 st.sidebar.markdown(
     """
     <h2 style="
