@@ -330,7 +330,7 @@ if prompt:
 # ═════════════════════════════════════
 
 # LOGO GUIA EN SIDEBAR
-guia_logo = get_base64_image("data/logo_guia.png")  # <-- guarda tu logo aquí
+guia_logo = get_base64_image("data/logo2.png")  # <-- guarda tu logo aquí
 
 if guia_logo:
     st.sidebar.markdown(f"""
