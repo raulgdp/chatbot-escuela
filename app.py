@@ -296,7 +296,7 @@ if "metrics" not in st.session_state:
 # CHAT
 # ═════════════════════════════════════
 
-st.title("💬 Chat Académico")
+st.title("💬 Chat Académico EISC")
 
 for m in st.session_state.messages:
 
@@ -330,6 +330,7 @@ if prompt:
 # ═════════════════════════════════════
 
 # LOGO GUIA EN SIDEBAR
+st.sidebar.title("📊 Escuela de Ingeniería de Siste,as y Comptación (EISC)")
 guia_logo = get_base64_image("data/logo2.png")  # <-- guarda tu logo aquí
 
 if guia_logo:
