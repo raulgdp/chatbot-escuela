@@ -1,48 +1,28 @@
 # ═════════════════════════════════════
-# ChatAcredita PRO — MULTI-AGENT FINAL
-# SCROLL REAL + UI FIX
+# ChatTesis PRO — MULTI-AGENT VERSION FINAL
+# UI PROFESIONAL + AGENTES + SCROLL OK
 # ═════════════════════════════════════
 
 import streamlit as st
 import os, time, json, unicodedata, base64
+import numpy as np
+from datetime import datetime
+
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from rank_bm25 import BM25Okapi
+
+
+# ═════════════════════════════════════
+# CONFIG
+# ═════════════════════════════════════
 
 st.set_page_config(layout="wide")
 
 COLLECTION_NAME = "acreditacion"
 TOP_K = 5
 
-# ═════════════════════════════════════
-# CSS SCROLL REAL
-# ═════════════════════════════════════
-
-st.markdown("""
-<style>
-
-.chat-container {
-    height: calc(100vh - 180px);
-    overflow-y: auto;
-    padding: 15px;
-    border-radius: 10px;
-    background: #fafafa;
-}
-
-section[data-testid="stChatInput"] {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: white;
-    padding: 10px 20%;
-    border-top: 2px solid #DC143C;
-    z-index: 9999;
-}
-
-</style>
-""", unsafe_allow_html=True)
 
 # ═════════════════════════════════════
 # UTILIDADES
@@ -66,13 +46,14 @@ def get_secret(key, default=None):
     except:
         return os.getenv(key, default)
 
+
 # ═════════════════════════════════════
 # API
 # ═════════════════════════════════════
 
 client = OpenAI(
     api_key=get_secret("OPENAI_API_KEY"),
-    base_url=get_secret("OPENAI_API_BASE", "https://openrouter.ai/api/v1")
+    base_url=get_secret("OPENAI_API_BASE")
 )
 
 qdrant = QdrantClient(
@@ -80,8 +61,9 @@ qdrant = QdrantClient(
     api_key=get_secret("QDRANT_API_KEY")
 )
 
+
 # ═════════════════════════════════════
-# EMBEDDING
+# MODELO EMBEDDING
 # ═════════════════════════════════════
 
 @st.cache_resource
@@ -90,19 +72,49 @@ def load_embedder():
 
 embedder = load_embedder()
 
+
 # ═════════════════════════════════════
-# RETRIEVAL
+# BM25
 # ═════════════════════════════════════
 
-def search(query):
+@st.cache_resource
+def load_bm25():
+    points = qdrant.scroll(collection_name=COLLECTION_NAME, limit=5000, with_payload=True)[0]
+    chunks = [normalize_text(p.payload["text"]) for p in points]
+    tokenized = [c.split() for c in chunks]
+    return BM25Okapi(tokenized), chunks
+
+bm25, bm25_chunks = load_bm25()
+
+
+# ═════════════════════════════════════
+# HYBRID SEARCH
+# ═════════════════════════════════════
+
+def hybrid_search(query):
+
     emb = embedder.encode([query])[0]
-    res = qdrant.query_points(
+
+    vector = qdrant.query_points(
         collection_name=COLLECTION_NAME,
         query=emb.tolist(),
         limit=TOP_K,
         with_payload=True
     ).points
-    return [r.payload["text"] for r in res]
+
+    bm25_scores = bm25.get_scores(query.split())
+    bm25_idx = np.argsort(bm25_scores)[::-1][:TOP_K]
+
+    docs = []
+
+    for r in vector:
+        docs.append(r.payload["text"])
+
+    for idx in bm25_idx:
+        docs.append(bm25_chunks[idx])
+
+    return list(set(docs))
+
 
 # ═════════════════════════════════════
 # AGENTES
@@ -112,52 +124,115 @@ class PlannerAgent:
     def run(self, query):
         return {"tool":"hybrid"}
 
+
 class MultiQueryAgent:
     def run(self, query):
-        return [query, query+" detalle", query+" explicación"]
+
+        prompt = f"""
+Genera 3 reformulaciones de la pregunta.
+
+Pregunta:
+{query}
+
+JSON:
+{{"queries":["q1","q2","q3"]}}
+"""
+
+        r = client.chat.completions.create(
+            model="mistralai/mistral-large",
+            messages=[{"role":"user","content":prompt}],
+            temperature=0
+        )
+
+        data = clean_json(r.choices[0].message.content)
+        return data.get("queries",[query])
+
 
 class AnswerAgent:
     def run(self, query, context):
+
+        prompt = f"""
+Responde SOLO con el contexto.
+
+Contexto:
+{context}
+
+Pregunta:
+{query}
+"""
+
         r = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role":"user","content":f"Contexto:\n{context}\nPregunta:{query}"}],
+            model="mistralai/mistral-large",
+            messages=[{"role":"user","content":prompt}],
             temperature=0.2
         )
+
         return r.choices[0].message.content
+
 
 class ReflectionAgent:
     def run(self, query, context, answer):
-        return "GOOD"
+
+        prompt = f"""
+Evalúa si la respuesta está soportada por el contexto.
+
+Responde GOOD o BAD.
+"""
+
+        r = client.chat.completions.create(
+            model="mistralai/mistral-large",
+            messages=[{"role":"user","content":prompt}],
+            temperature=0
+        )
+
+        return r.choices[0].message.content.strip()
+
 
 # ═════════════════════════════════════
 # ORQUESTADOR
 # ═════════════════════════════════════
 
-class RAG:
+class IntelligentRAG:
 
     def __init__(self):
         self.multi = MultiQueryAgent()
         self.answer = AnswerAgent()
+        self.reflect = ReflectionAgent()
 
     def run(self, query):
 
+        trace = []
         start = time.time()
 
         queries = self.multi.run(query)
+        trace.append({"multi_query":queries})
 
         docs = []
         for q in queries:
-            docs.extend(search(q))
+            docs.extend(hybrid_search(q))
 
         context = "\n\n".join(docs[:TOP_K])
 
         answer = self.answer.run(query, context)
+        trace.append({"answer":answer[:120]})
+
+        reflection = self.reflect.run(query, context, answer)
+        trace.append({"reflection":reflection})
 
         latency = round(time.time() - start, 2)
 
-        return answer, latency
+        precision = min(1, len(docs)/TOP_K)
+        recall = min(1, len(docs)/10)
+        f = 2*(precision*recall)/(precision+recall) if precision+recall else 0
 
-rag = RAG()
+        return answer, trace, {
+            "latency":latency,
+            "f_score":round(f,3)
+        }
+
+
+rag = IntelligentRAG()
+
 
 # ═════════════════════════════════════
 # SESSION
@@ -165,46 +240,48 @@ rag = RAG()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "metrics" not in st.session_state:
+    st.session_state.metrics = {"latency":0,"f_score":0}
+
 
 # ═════════════════════════════════════
 # LAYOUT
 # ═════════════════════════════════════
 
-st.title("🎓 ChatAcredita PRO")
+st.title("🎓 ChatTesis PRO — Multi-Agent")
 
-# CHAT BOX
-st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+chat_container = st.container()
 
-for m in st.session_state.messages:
-    with st.chat_message(m["role"]):
-        st.markdown(m["content"])
+with chat_container:
+    for m in st.session_state.messages:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
 
-st.markdown('</div>', unsafe_allow_html=True)
-
-# INPUT
 prompt = st.chat_input("Pregunta...")
 
 if prompt:
 
     st.session_state.messages.append({"role":"user","content":prompt})
 
-    answer, latency = rag.run(prompt)
+    with st.chat_message("assistant"):
+
+        with st.spinner("🤖 Agentes trabajando..."):
+            answer, trace, metrics = rag.run(prompt)
+
+        st.markdown(answer)
+
+        with st.expander("🔎 Agent Trace"):
+            st.json(trace)
 
     st.session_state.messages.append({"role":"assistant","content":answer})
+    st.session_state.metrics = metrics
 
     st.rerun()
 
+
 # ═════════════════════════════════════
-# AUTO SCROLL REAL
+# MÉTRICAS
 # ═════════════════════════════════════
 
-st.markdown("""
-<script>
-setTimeout(function() {
-    const chat = window.parent.document.querySelector('.chat-container');
-    if(chat){
-        chat.scrollTop = chat.scrollHeight;
-    }
-}, 200);
-</script>
-""", unsafe_allow_html=True)
+st.sidebar.metric("Latency", st.session_state.metrics["latency"])
+st.sidebar.metric("F-score", st.session_state.metrics["f_score"])
