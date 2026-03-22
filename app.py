@@ -1,5 +1,5 @@
 # ═════════════════════════════════════
-# ChatTesis PRO — FINAL MULTIAGENTE + FEEDBACK INTELIGENTE
+# ChatTesis PRO — FINAL + FEEDBACK VISUAL INTELIGENTE
 # ═════════════════════════════════════
 
 import streamlit as st
@@ -162,47 +162,38 @@ def load_embedder():
 
 embedder = load_embedder()
 
-# BM25
-@st.cache_resource
-def load_bm25():
-    points = qdrant.scroll(collection_name=COLLECTION_NAME, limit=5000, with_payload=True)[0]
-    chunks = [normalize_text(p.payload["text"]) for p in points]
-    tokenized = [c.split() for c in chunks]
-    return BM25Okapi(tokenized), chunks
-
-bm25, bm25_chunks = load_bm25()
-
-# HYBRID SEARCH + FEEDBACK
+# HYBRID SEARCH
 def hybrid_search(query):
 
     emb = embedder.encode([query])[0]
-
     docs = []
 
-    vector = qdrant.query_points(
-        collection_name=COLLECTION_NAME,
-        query=emb.tolist(),
-        limit=TOP_K,
-        with_payload=True
-    ).points
-
-    docs += [r.payload["text"] for r in vector]
-
-    try:
-        feedback = qdrant.query_points(
-            collection_name=FEEDBACK_COLLECTION,
+    docs += [
+        r.payload["text"]
+        for r in qdrant.query_points(
+            collection_name=COLLECTION_NAME,
             query=emb.tolist(),
-            limit=2,
+            limit=TOP_K,
             with_payload=True
         ).points
+    ]
 
-        docs += [r.payload["text"] for r in feedback]
+    try:
+        docs += [
+            r.payload["text"]
+            for r in qdrant.query_points(
+                collection_name=FEEDBACK_COLLECTION,
+                query=emb.tolist(),
+                limit=2,
+                with_payload=True
+            ).points
+        ]
     except:
         pass
 
-    return list(set(docs))
+    return docs
 
-# AGENTES
+# CLASSIFIER
 class FeedbackClassifierAgent:
     def run(self, text):
         prompt = f"""
@@ -226,47 +217,23 @@ JSON:
 
 classifier = FeedbackClassifierAgent()
 
-class MultiQueryAgent:
-    def run(self, query):
-        return [query]
+# RAG
+def run_rag(query):
+    start = time.time()
+    docs = hybrid_search(query)
+    context = "\n\n".join(docs[:TOP_K])
 
-class AnswerAgent:
-    def run(self, query, context):
-        prompt = f"Contexto:\n{context}\n\nPregunta: {query}"
-        r = client.chat.completions.create(
-            model="mistralai/mistral-large",
-            messages=[{"role":"user","content":prompt}]
-        )
-        return r.choices[0].message.content
+    r = client.chat.completions.create(
+        model="mistralai/mistral-large",
+        messages=[{"role":"user","content":f"Contexto:\n{context}\n\nPregunta: {query}"}]
+    )
 
-class RAG:
-    def __init__(self):
-        self.multi = MultiQueryAgent()
-        self.answer = AnswerAgent()
-
-    def run(self, query):
-
-        start = time.time()
-
-        docs = []
-        for q in self.multi.run(query):
-            docs.extend(hybrid_search(q))
-
-        context = "\n\n".join(docs[:TOP_K])
-        answer = self.answer.run(query, context)
-
-        latency = round(time.time() - start, 2)
-
-        return answer, {"latency": latency}
-
-rag = RAG()
+    latency = round(time.time() - start, 2)
+    return r.choices[0].message.content, latency
 
 # SESSION
 if "messages" not in st.session_state:
     st.session_state.messages = []
-
-if "metrics" not in st.session_state:
-    st.session_state.metrics = {"latency":0}
 
 avatar_base64 = get_base64_image("data/yo.webp")
 
@@ -274,17 +241,17 @@ avatar_base64 = get_base64_image("data/yo.webp")
 st.title("💬 Chat Académico EISC")
 
 for m in st.session_state.messages:
-    avatar = "👤" if m["role"]=="user" else "🧑‍🏫"
-    with st.chat_message(m["role"], avatar=avatar):
+    with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-prompt = st.chat_input("Escribe tu pregunta o sugerencia...")
+prompt = st.chat_input("Pregunta o sugerencia...")
 
 if prompt:
 
+    feedback_triggered = False  # 🔥 NUEVO
+
     tipo = classifier.run(prompt)
 
-    # 🔥 SUGERENCIA
     if tipo == "sugerencia":
 
         emb = embedder.encode([prompt])[0]
@@ -298,13 +265,13 @@ if prompt:
             }]
         )
 
-        st.warning("💡 Sugerencia guardada para mejorar el sistema")
+        feedback_triggered = True
+        st.warning("💡 Sugerencia guardada")
         st.stop()
 
-    # 🔥 PREGUNTA
     st.session_state.messages.append({"role":"user","content":prompt})
 
-    with st.chat_message("assistant", avatar="🧑‍🏫"):
+    with st.chat_message("assistant"):
 
         thinking = st.empty()
 
@@ -312,20 +279,19 @@ if prompt:
         <div class="thinking-avatar">
             <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
             <span>Analizando...</span>
-            <div>
-                <span class="dot"></span>
-                <span class="dot"></span>
-                <span class="dot"></span>
-            </div>
         </div>
         """, unsafe_allow_html=True)
 
-        answer, metrics = rag.run(prompt)
+        answer, latency = run_rag(prompt)
+
+        mensaje_feedback = "📊 Sin retroalimentación"
+        if feedback_triggered:
+            mensaje_feedback = "🧠 Aprendiendo del usuario"
 
         thinking.markdown(f"""
         <div class="thinking-avatar" style="border-left:4px solid green;">
             <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
-            <span>Respuesta lista ✅</span>
+            <span><b>Respuesta lista</b> ✅<br><small>{mensaje_feedback}</small></span>
         </div>
         """, unsafe_allow_html=True)
 
@@ -333,64 +299,36 @@ if prompt:
         thinking.empty()
 
         st.markdown(answer)
+        st.caption(f"⏱️ {latency}s")
 
-        # 🔥 FEEDBACK INTELIGENTE
+        # FEEDBACK
         col1, col2 = st.columns(2)
 
         with col1:
             if st.button("👍 Útil"):
-                st.success("Gracias por tu feedback")
+                st.success("Gracias")
 
         with col2:
             if st.button("👎 No útil"):
 
-                texto_feedback = f"""
-                PREGUNTA: {prompt}
-                RESPUESTA INCORRECTA: {answer}
-                """
+                feedback_triggered = True
 
-                emb = embedder.encode([texto_feedback])[0]
+                texto = f"Pregunta: {prompt}\nRespuesta incorrecta: {answer}"
+                emb = embedder.encode([texto])[0]
 
                 qdrant.upsert(
                     collection_name=FEEDBACK_COLLECTION,
                     points=[{
                         "id": str(uuid.uuid4()),
                         "vector": emb.tolist(),
-                        "payload": {"text": texto_feedback}
+                        "payload": {"text": texto}
                     }]
                 )
 
                 st.warning("Aprendiendo de este error...")
 
     st.session_state.messages.append({"role":"assistant","content":answer})
-    st.session_state.metrics = metrics
-
     st.rerun()
-
-# SIDEBAR
-col1, col2 = st.sidebar.columns([1, 2])
-
-with col1:
-    st.image("data/yo.webp", width=80)
-
-with col2:
-    st.markdown(
-        "**Raúl E. Gutiérrez de Piñerez Reyes**\n"
-        "<span style='color:gray; font-size:13px;'>Profesor - PLN</span>",
-        unsafe_allow_html=True
-    )
-
-st.sidebar.markdown("### 📊 Métricas")
-st.sidebar.metric("⏱️ Latencia", st.session_state.metrics["latency"])
-
-with st.sidebar.expander("🧠 Cómo usar el chatbot", expanded=True):
-    st.markdown("""
-- Pregunta sobre acreditación  
-- Usa contexto académico  
-- Puedes pedir análisis  
-- Preguntas sobre el acuerdo 009  
-- Preguntas sobre la EISC  
-""")
 
 # FOOTER
 st.markdown("""
