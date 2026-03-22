@@ -1,13 +1,11 @@
 # ═════════════════════════════════════
-# ChatTesis PRO — MULTI-AGENT VERSION FINAL
-# UI PROFESIONAL + AGENTES + SCROLL OK
+# ChatTesis PRO — FINAL PROFESIONAL
+# Multi-Agent + UI Institucional
 # ═════════════════════════════════════
 
 import streamlit as st
 import os, time, json, unicodedata, base64
 import numpy as np
-from datetime import datetime
-
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
@@ -15,10 +13,15 @@ from rank_bm25 import BM25Okapi
 
 
 # ═════════════════════════════════════
-# CONFIG
+# CONFIG PAGE
 # ═════════════════════════════════════
 
-st.set_page_config(layout="wide")
+st.set_page_config(
+    page_title="ChatTesis - Univalle",
+    page_icon="🎓",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 COLLECTION_NAME = "acreditacion"
 TOP_K = 5
@@ -27,6 +30,13 @@ TOP_K = 5
 # ═════════════════════════════════════
 # UTILIDADES
 # ═════════════════════════════════════
+
+def get_base64_image(path):
+    try:
+        with open(path, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    except:
+        return None
 
 def normalize_text(text):
     text = unicodedata.normalize("NFD", text)
@@ -48,6 +58,77 @@ def get_secret(key, default=None):
 
 
 # ═════════════════════════════════════
+# CSS GLOBAL (HEADER + FOOTER)
+# ═════════════════════════════════════
+
+st.markdown("""
+<style>
+
+header {visibility:hidden;}
+
+.custom-header {
+    position:fixed;
+    top:0;
+    left:0;
+    right:0;
+    height:70px;
+    background:linear-gradient(90deg,#DC143C,#8B0000);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    z-index:9999;
+    color:white;
+    font-weight:600;
+    font-size:18px;
+}
+
+.main {
+    padding-top:80px;
+}
+
+.logo-float {
+    position:fixed;
+    top:12px;
+    right:20px;
+    z-index:10000;
+    background:white;
+    border-radius:50%;
+    padding:4px;
+}
+
+.footer {
+    position:fixed;
+    bottom:65px;
+    left:0;
+    right:0;
+    text-align:center;
+    font-size:11px;
+    color:#999;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+
+# HEADER
+st.markdown("""
+<div class="custom-header">
+🎓 ChatTesis PRO — Universidad del Valle
+</div>
+""", unsafe_allow_html=True)
+
+
+# LOGO
+logo = get_base64_image("data/univalle_logo.png")
+if logo:
+    st.markdown(f"""
+    <div class="logo-float">
+        <img src="data:image/png;base64,{logo}" width="40">
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# ═════════════════════════════════════
 # API
 # ═════════════════════════════════════
 
@@ -63,7 +144,7 @@ qdrant = QdrantClient(
 
 
 # ═════════════════════════════════════
-# MODELO EMBEDDING
+# EMBEDDING
 # ═════════════════════════════════════
 
 @st.cache_resource
@@ -120,19 +201,13 @@ def hybrid_search(query):
 # AGENTES
 # ═════════════════════════════════════
 
-class PlannerAgent:
-    def run(self, query):
-        return {"tool":"hybrid"}
-
-
 class MultiQueryAgent:
     def run(self, query):
 
         prompt = f"""
-Genera 3 reformulaciones de la pregunta.
+Genera 3 reformulaciones.
 
-Pregunta:
-{query}
+Pregunta: {query}
 
 JSON:
 {{"queries":["q1","q2","q3"]}}
@@ -144,21 +219,18 @@ JSON:
             temperature=0
         )
 
-        data = clean_json(r.choices[0].message.content)
-        return data.get("queries",[query])
+        return clean_json(r.choices[0].message.content).get("queries",[query])
 
 
 class AnswerAgent:
     def run(self, query, context):
 
         prompt = f"""
-Responde SOLO con el contexto.
+Responde SOLO con el contexto:
 
-Contexto:
 {context}
 
-Pregunta:
-{query}
+Pregunta: {query}
 """
 
         r = client.chat.completions.create(
@@ -170,42 +242,21 @@ Pregunta:
         return r.choices[0].message.content
 
 
-class ReflectionAgent:
-    def run(self, query, context, answer):
-
-        prompt = f"""
-Evalúa si la respuesta está soportada por el contexto.
-
-Responde GOOD o BAD.
-"""
-
-        r = client.chat.completions.create(
-            model="mistralai/mistral-large",
-            messages=[{"role":"user","content":prompt}],
-            temperature=0
-        )
-
-        return r.choices[0].message.content.strip()
-
-
 # ═════════════════════════════════════
 # ORQUESTADOR
 # ═════════════════════════════════════
 
-class IntelligentRAG:
+class RAG:
 
     def __init__(self):
         self.multi = MultiQueryAgent()
         self.answer = AnswerAgent()
-        self.reflect = ReflectionAgent()
 
     def run(self, query):
 
-        trace = []
         start = time.time()
 
         queries = self.multi.run(query)
-        trace.append({"multi_query":queries})
 
         docs = []
         for q in queries:
@@ -214,10 +265,6 @@ class IntelligentRAG:
         context = "\n\n".join(docs[:TOP_K])
 
         answer = self.answer.run(query, context)
-        trace.append({"answer":answer[:120]})
-
-        reflection = self.reflect.run(query, context, answer)
-        trace.append({"reflection":reflection})
 
         latency = round(time.time() - start, 2)
 
@@ -225,13 +272,13 @@ class IntelligentRAG:
         recall = min(1, len(docs)/10)
         f = 2*(precision*recall)/(precision+recall) if precision+recall else 0
 
-        return answer, trace, {
+        return answer, {
             "latency":latency,
             "f_score":round(f,3)
         }
 
 
-rag = IntelligentRAG()
+rag = RAG()
 
 
 # ═════════════════════════════════════
@@ -240,38 +287,37 @@ rag = IntelligentRAG()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
 if "metrics" not in st.session_state:
     st.session_state.metrics = {"latency":0,"f_score":0}
 
 
 # ═════════════════════════════════════
-# LAYOUT
+# CHAT
 # ═════════════════════════════════════
 
-st.title("🎓 ChatTesis PRO — Multi-Agent")
+st.title("💬 Chat Académico")
 
-chat_container = st.container()
+for m in st.session_state.messages:
 
-with chat_container:
-    for m in st.session_state.messages:
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
+    avatar = "👤" if m["role"]=="user" else "🧑‍🏫"
 
-prompt = st.chat_input("Pregunta...")
+    with st.chat_message(m["role"], avatar=avatar):
+        st.markdown(m["content"])
+
+
+prompt = st.chat_input("Escribe tu pregunta...")
 
 if prompt:
 
     st.session_state.messages.append({"role":"user","content":prompt})
 
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar="🧑‍🏫"):
 
-        with st.spinner("🤖 Agentes trabajando..."):
-            answer, trace, metrics = rag.run(prompt)
+        with st.spinner("🤖 Analizando..."):
+            answer, metrics = rag.run(prompt)
 
         st.markdown(answer)
-
-        with st.expander("🔎 Agent Trace"):
-            st.json(trace)
 
     st.session_state.messages.append({"role":"assistant","content":answer})
     st.session_state.metrics = metrics
@@ -280,8 +326,21 @@ if prompt:
 
 
 # ═════════════════════════════════════
-# MÉTRICAS
+# SIDEBAR
 # ═════════════════════════════════════
 
-st.sidebar.metric("Latency", st.session_state.metrics["latency"])
-st.sidebar.metric("F-score", st.session_state.metrics["f_score"])
+st.sidebar.title("📊 Métricas")
+
+st.sidebar.metric("⏱️ Latencias", st.session_state.metrics["latency"])
+st.sidebar.metric("🎯 F-Score", st.session_state.metrics["f_score"])
+
+
+# ═════════════════════════════════════
+# FOOTER
+# ═════════════════════════════════════
+
+st.markdown("""
+<div class="footer">
+Universidad del Valle • Grupo GUIA • ChatTesis PRO
+</div>
+""", unsafe_allow_html=True)
