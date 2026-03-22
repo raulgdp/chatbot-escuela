@@ -1,5 +1,5 @@
 # ═════════════════════════════════════
-# ChatTesis PRO — RAG + Feedback Vectorial
+# ChatTesis PRO — RAG + Avatar + Feedback Vectorial
 # ═════════════════════════════════════
 
 import streamlit as st
@@ -11,7 +11,11 @@ from qdrant_client import QdrantClient
 from rank_bm25 import BM25Okapi
 
 # CONFIG
-st.set_page_config(page_title="ChatTesis PRO", layout="wide")
+st.set_page_config(
+    page_title="ChatAcredita - EISC-Univalle",
+    page_icon="🎓",
+    layout="wide"
+)
 
 COLLECTION_NAME = "acreditacion"
 FEEDBACK_COLLECTION = "feedback_acreditacion"
@@ -43,34 +47,52 @@ def get_secret(key, default=None):
     except:
         return os.getenv(key, default)
 
-# CSS
+# CSS + ANIMACIÓN
 st.markdown("""
 <style>
+header {visibility:hidden;}
+
 .thinking-avatar {
- position: fixed;
- bottom: 90px;
- right: 20px;
- background: white;
- padding: 10px;
- border-radius: 12px;
- box-shadow: 0px 4px 12px rgba(0,0,0,0.2);
- display: flex;
- align-items: center;
- gap: 10px;
- z-index:9999;
+    position: fixed;
+    bottom: 90px;
+    right: 20px;
+    background: white;
+    padding: 10px;
+    border-radius: 12px;
+    box-shadow: 0px 4px 12px rgba(0,0,0,0.25);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    z-index:9999;
 }
+
 .avatar-img { border-radius:50%; width:38px; }
-.dot { height:6px; width:6px; background:#888; border-radius:50%; animation: blink 1.4s infinite; }
-@keyframes blink {0%{opacity:.2;}20%{opacity:1;}100%{opacity:.2;}}
+
+.dot {
+    height:6px; width:6px;
+    background:#888;
+    border-radius:50%;
+    animation: blink 1.4s infinite;
+}
+
+@keyframes blink {
+    0%{opacity:.2;}
+    20%{opacity:1;}
+    100%{opacity:.2;}
+}
 </style>
 """, unsafe_allow_html=True)
 
 # API
-client = OpenAI(api_key=get_secret("OPENAI_API_KEY"),
-                base_url=get_secret("OPENAI_API_BASE"))
+client = OpenAI(
+    api_key=get_secret("OPENAI_API_KEY"),
+    base_url=get_secret("OPENAI_API_BASE")
+)
 
-qdrant = QdrantClient(url=get_secret("QDRANT_URL"),
-                      api_key=get_secret("QDRANT_API_KEY"))
+qdrant = QdrantClient(
+    url=get_secret("QDRANT_URL"),
+    api_key=get_secret("QDRANT_API_KEY")
+)
 
 # EMBEDDINGS
 @st.cache_resource
@@ -79,48 +101,51 @@ def load_embedder():
 
 embedder = load_embedder()
 
-# HYBRID SEARCH EXTENDIDO
+# BM25
+@st.cache_resource
+def load_bm25():
+    points = qdrant.scroll(collection_name=COLLECTION_NAME, limit=5000, with_payload=True)[0]
+    chunks = [normalize_text(p.payload["text"]) for p in points]
+    tokenized = [c.split() for c in chunks]
+    return BM25Okapi(tokenized), chunks
+
+bm25, bm25_chunks = load_bm25()
+
+# 🔥 HYBRID SEARCH + FEEDBACK
 def hybrid_search(query):
 
     emb = embedder.encode([query])[0]
 
     docs = []
 
-    # 🔹 Docs oficiales
-    vector_docs = qdrant.query_points(
+    # Documentos
+    vector = qdrant.query_points(
         collection_name=COLLECTION_NAME,
         query=emb.tolist(),
         limit=TOP_K,
         with_payload=True
     ).points
 
-    docs += [r.payload["text"] for r in vector_docs]
+    docs += [r.payload["text"] for r in vector]
 
-    # 🔥 Feedback (peso menor)
+    # Feedback
     try:
-        feedback_docs = qdrant.query_points(
+        feedback = qdrant.query_points(
             collection_name=FEEDBACK_COLLECTION,
             query=emb.tolist(),
             limit=2,
             with_payload=True
         ).points
 
-        docs += [r.payload["text"] for r in feedback_docs]
-
+        docs += [r.payload["text"] for r in feedback]
     except:
         pass
 
-    return docs
+    return list(set(docs))
 
 # AGENTES
 class MultiQueryAgent:
     def run(self, query):
-        prompt = f"Genera 3 reformulaciones de: {query}"
-        r = client.chat.completions.create(
-            model="mistralai/mistral-large",
-            messages=[{"role":"user","content":prompt}],
-            temperature=0
-        )
         return [query]
 
 class AnswerAgent:
@@ -153,22 +178,26 @@ rag = RAG()
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+if "metrics" not in st.session_state:
+    st.session_state.metrics = {"latency":0}
+
 avatar_base64 = get_base64_image("data/yo.webp")
 
 # CHAT
-st.title("💬 Chat Académico")
+st.title("💬 Chat Académico EISC")
 
 for m in st.session_state.messages:
-    with st.chat_message(m["role"]):
+    avatar = "👤" if m["role"]=="user" else "🧑‍🏫"
+    with st.chat_message(m["role"], avatar=avatar):
         st.markdown(m["content"])
 
-prompt = st.chat_input("Pregunta...")
+prompt = st.chat_input("Escribe tu pregunta...")
 
 if prompt:
 
     st.session_state.messages.append({"role":"user","content":prompt})
 
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar="🧑‍🏫"):
 
         thinking = st.empty()
 
@@ -201,25 +230,57 @@ if prompt:
 
         with col1:
             if st.button("👍 Útil"):
-                st.success("Gracias")
+                st.success("Gracias por tu feedback")
 
         with col2:
             if st.button("👎 No útil"):
 
-                texto = f"Pregunta: {prompt}\nRespuesta: {answer}"
+                texto_feedback = f"""
+                Pregunta: {prompt}
+                Respuesta incorrecta: {answer}
+                """
 
-                emb = embedder.encode([texto])[0]
+                emb = embedder.encode([texto_feedback])[0]
 
-                qdrant.upsert(
-                    collection_name=FEEDBACK_COLLECTION,
-                    points=[{
-                        "id": str(uuid.uuid4()),
-                        "vector": emb.tolist(),
-                        "payload": {"text": texto}
-                    }]
-                )
-
-                st.warning("Aprendiendo de este error...")
+                try:
+                    qdrant.upsert(
+                        collection_name=FEEDBACK_COLLECTION,
+                        points=[{
+                            "id": str(uuid.uuid4()),
+                            "vector": emb.tolist(),
+                            "payload": {"text": texto_feedback}
+                        }]
+                    )
+                    st.warning("Aprendiendo de esta respuesta...")
+                except:
+                    st.error("Error guardando feedback")
 
     st.session_state.messages.append({"role":"assistant","content":answer})
+    st.session_state.metrics = metrics
     st.rerun()
+
+# SIDEBAR
+col1, col2 = st.sidebar.columns([1, 2])
+
+with col1:
+    st.image("data/yo.webp", width=80)
+
+with col2:
+    st.markdown("**Raúl E. Gutiérrez de Piñerez Reyes**")
+
+st.sidebar.markdown("### 📊 Métricas")
+st.sidebar.metric("⏱️ Latencia", st.session_state.metrics["latency"])
+
+with st.sidebar.expander("🧠 Cómo usar el chatbot", expanded=True):
+    st.markdown("""
+- Pregunta sobre acreditación  
+- Usa contexto académico  
+- Puedes pedir análisis  
+""")
+
+# FOOTER
+st.markdown("""
+<div style='text-align:center; font-size:11px; color:#999;'>
+Universidad del Valle • Grupo GUIA
+</div>
+""", unsafe_allow_html=True)
