@@ -330,8 +330,19 @@ if prompt:
 # ═════════════════════════════════════
 
 # LOGO GUIA EN SIDEBAR
-st.sidebar.title("📊 Escuela de Ingeniería de Siste,as y Comptación (EISC)")
-guia_logo = get_base64_image("data/logo2.png")  # <-- guarda tu logo aquí
+st.sidebar.markdown(
+    """
+    <h2 style="
+        color:#b71c1c;
+        font-weight:600;
+        margin-bottom:10px;
+    ">
+    📊 Escuela de Ingeniería de Sistemas y Computación (EISC)
+    </h2>
+    """,
+    unsafe_allow_html=True
+)
+guia_logo = get_base64_image("data/guia-2.png")  # <-- guarda tu logo aquí
 
 if guia_logo:
     st.sidebar.markdown(f"""
