@@ -10,6 +10,162 @@ from rank_bm25 import BM25Okapi
 import re
 
 # ════════════════════════════════════════════════════════════════════════════
+# 📤 PROCESAMIENTO DE DOCUMENTOS SUBIDOS (INTEGRADO)
+# ════════════════════════════════════════════════════════════════════════════
+import tempfile
+import fitz  # PyMuPDF
+import pymupdf4llm
+import cv2
+from PIL import Image
+import io as io_lib
+
+def process_uploaded_document(pdf_bytes, filename):
+    """
+    Procesa un PDF subido usando el mismo pipeline que embeddings-T.py
+    Devuelve chunks procesados listos para subir a Qdrant
+    """
+    try:
+        # Crear archivo temporal
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(pdf_bytes)
+            tmp_path = tmp.name
+        
+        # Extraer texto con PyMuPDF4LLM
+        doc = fitz.open(tmp_path)
+        all_text = ""
+        
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            
+            # Extraer texto base
+            page_text = pymupdf4llm.to_markdown(
+                doc, 
+                pages=[page_num],
+                show_progress=False,
+                page_chunks=False,
+            )
+            
+            # Detectar y procesar tablas con Tesseract si está disponible
+            has_visual = (
+                "figura" in page_text.lower() or
+                "imagen" in page_text.lower() or
+                "tabla" in page_text.lower() or
+                "cuadro" in page_text.lower() or
+                len(page.get_images()) > 0 or
+                len([b for b in page.get_text("dict").get("blocks", []) if b.get("lines")]) > 15
+            )
+            
+            if has_visual and TESSERACT_AVAILABLE:
+                # Extraer con Tesseract (mismo código que embeddings-T.py)
+                pix = page.get_pixmap(dpi=300)
+                img_bytes = pix.tobytes("png")
+                img = Image.open(io_lib.BytesIO(img_bytes))
+                
+                img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+                gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+                thresh = cv2.adaptiveThreshold(
+                    gray, 255, 
+                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                    cv2.THRESH_BINARY, 11, 2
+                )
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+                thresh = cv2.dilate(thresh, kernel, iterations=1)
+                
+                custom_config = (
+                    r'--oem 3 --psm 6 -l spa+eng '
+                    r'--dpi 300 '
+                    r'-c preserve_interword_spaces=1 '
+                    r'-c tessedit_char_whitelist="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,:;()[]{}%$€#@/\\-_ñáéíóúüÁÉÍÓÚÜ°"'
+                )
+                
+                table_text = pytesseract.image_to_string(thresh, config=custom_config)
+                if table_text.strip():
+                    table_text = normalize_text(table_text)
+                    page_text += f"\n\n[TABLA PÁGINA {page_num + 1}]\n{table_text}"
+            
+            all_text += f"\n\n--- Página {page_num + 1} ---\n\n" + page_text
+        
+        doc.close()
+        os.unlink(tmp_path)
+        
+        # Chunking estructural (mismo que embeddings-T.py)
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+            separators=[
+                "\n\n## ", "\n\n### ", "\n\n#### ",
+                "\n\n[TABLA ", "\n\n[IMAGEN ", "\n\n[FIGURA ",
+                "\n\n|", "\n\n", "\n", " ", ""
+            ],
+            is_separator_regex=False,
+        )
+        
+        chunks = splitter.split_text(all_text)
+        valid_chunks = []
+        
+        for chunk in chunks:
+            chunk = chunk.strip()
+            if len(chunk) < 100:
+                continue
+            if (re.search(r'\|[^\n]*$', chunk) and not re.search(r'\|\s*$', chunk)) or \
+               chunk.endswith("[TABLA") or chunk.endswith("[IMAGEN"):
+                continue
+            valid_chunks.append(chunk)
+        
+        return valid_chunks, [filename] * len(valid_chunks)
+        
+    except Exception as e:
+        st.error(f"❌ Error procesando documento: {str(e)[:100]}")
+        return [], []
+
+def add_chunks_to_qdrant(chunks, sources):
+    """Añade nuevos chunks a la colección existente en Qdrant Cloud"""
+    try:
+        # Generar embeddings con BGE-M3
+        chunks_normalized = [normalize_text(chunk) for chunk in chunks]
+        embeddings = embedder.encode(chunks_normalized, normalize_embeddings=True)
+        
+        # Crear puntos para Qdrant
+        points = []
+        for i, (chunk, source, embedding) in enumerate(zip(chunks_normalized, sources, embeddings)):
+            points.append(
+                PointStruct(
+                    id=str(uuid.uuid4()),
+                    vector=embedding.tolist(),
+                    payload={
+                        "text": chunk,
+                        "source": source,
+                        "chunk_id": i,
+                        "type": "documento_subido",
+                        "timestamp": time.time()
+                    }
+                )
+            )
+        
+        # Añadir a colección existente
+        qdrant.upsert(
+            collection_name=COLLECTION_NAME,
+            points=points
+        )
+        
+        # ✅ Actualizar BM25 en memoria
+        if "bm25" in st.session_state:
+            tokenized_new = [chunk.split() for chunk in chunks_normalized]
+            st.session_state.bm25.doc_freq = {}
+            st.session_state.bm25.doc_len = []
+            # Reconstruir BM25 con chunks antiguos + nuevos
+            all_chunks = st.session_state.bm25_chunks + chunks_normalized
+            tokenized_all = [chunk.split() for chunk in all_chunks]
+            st.session_state.bm25 = BM25Okapi(tokenized_all)
+            st.session_state.bm25_chunks = all_chunks
+        
+        return True, len(points)
+        
+    except Exception as e:
+        st.error(f"❌ Error subiendo a Qdrant: {str(e)[:100]}")
+        return False, 0
+
+# ════════════════════════════════════════════════════════════════════════════
 # 🔐 LOGIN SIMPLE
 # ════════════════════════════════════════════════════════════════════════════
 USERS = {
@@ -504,60 +660,65 @@ if prompt:
     st.rerun()
 
 # ════════════════════════════════════════════════════════════════════════════
-# 📊 SIDEBAR - MÉTRICAS Y DOCUMENTACIÓN
+# 📁 SIDEBAR: Subir documento + Métricas
 # ════════════════════════════════════════════════════════════════════════════
-col1, col2 = st.sidebar.columns([1, 2])
-with col1:
-    st.image("data/yo.webp" if os.path.exists("data/yo.webp") else "https://via.placeholder.com/80", width=80)
-with col2:
-    st.markdown(f"**{st.session_state.user}**")
-    st.caption("EISC Univalle")
-
-st.sidebar.markdown("### 📊 Métricas en tiempo real")
-st.sidebar.metric("⏱️ Latencia", f"{st.session_state.metrics.get('latency', 0)} s")
-st.sidebar.metric("🔍 Tipo de input", st.session_state.metrics.get('intent', 'pregunta').capitalize())
-st.sidebar.metric("👥 Visitas totales", st.session_state.visits)
-
-with st.sidebar.expander("🧠 Arquitectura del Sistema", expanded=True):
-    st.markdown("""
-    ### 🤖 Sistema Multiagente
+with st.sidebar:
+    st.markdown("### 📁 Subir Documento")
     
-    **1. Classifier Agent**
-    - Clasifica intención: pregunta vs retroalimentación
-    - Context-aware (usa última respuesta)
-    - Zero-shot classification con LLM
+    uploaded_file = st.file_uploader(
+        "Sube PDF sobre acreditación",
+        type=["pdf"],
+        help="El documento será procesado y añadido a la base de conocimiento"
+    )
     
-    **2. RAG Core**
-    - Búsqueda híbrida: Qdrant Cloud + BM25
-    - Embeddings: BAAI/bge-m3 (1024d)
-    - Colecciones: documentos originales + feedback validado
+    if uploaded_file:
+        if st.button("🚀 Procesar y Añadir a Qdrant", type="primary"):
+            with st.spinner("Procesando documento..."):
+                # Procesar documento
+                pdf_bytes = uploaded_file.read()
+                chunks, sources = process_uploaded_document(pdf_bytes, uploaded_file.name)
+                
+                if chunks:
+                    st.success(f"✅ Extraídos {len(chunks)} chunks")
+                    
+                    # Subir a Qdrant
+                    success, count = add_chunks_to_qdrant(chunks, sources)
+                    
+                    if success:
+                        st.success(f"✅ Añadidos {count} chunks a Qdrant Cloud")
+                        st.balloons()
+                        # Recargar BM25
+                        st.session_state.pop("bm25", None)
+                        st.rerun()
+                    else:
+                        st.error("❌ Error al subir a Qdrant")
+                else:
+                    st.warning("⚠️ No se extrajeron chunks del documento")
     
-    **3. Answer Agent**
-    - Genera respuestas estructuradas
-    - Formato inteligente: viñetas, tablas, párrafos
-    - Contexto integrado de múltiples fuentes
+    st.markdown("---")
     
-    **4. Correction Agent**
-    - Corrige respuestas basado en feedback
-    - Mantiene formato original
-    - Solo modifica información específica
+    # Métricas (igual que antes)
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        st.image("data/yo.webp" if os.path.exists("data/yo.webp") else "https://via.placeholder.com/80", width=80)
+    with col2:
+        st.markdown(f"**{st.session_state.user}**")
+        st.caption("EISC Univalle")
     
-    ### 💾 Persistencia de Conocimiento
+    st.markdown("### 📊 Métricas")
+    st.metric("⏱️ Latencia", f"{st.session_state.metrics.get('latency', 0)} s")
+    st.metric("🔍 Última intención", st.session_state.metrics.get('intent', 'pregunta').capitalize())
+    st.metric("👥 Visitas", st.session_state.visits)
     
-    ✅ **Retroalimentación validada → Nuevos documentos en Qdrant**
-    - Colección separada: `feedback_acreditacion`
-    - Embeddings generados automáticamente
-    - Disponible para búsquedas futuras
-    - Mejora continua del sistema
-    
-    ### 🌐 Infraestructura
-    
-    - **Vector DB**: Qdrant Cloud (2 colecciones)
-    - **LLM**: OpenRouter (Llama 3.1 70B)
-    - **Embeddings**: BAAI/bge-m3 (1024d)
-    - **Framework**: Streamlit + Multiagente
-    """)
-
+    with st.expander("🧠 Arquitectura"):
+        st.markdown("""
+        **Pipeline de procesamiento:**
+        1. Extracción con PyMuPDF4LLM
+        2. OCR de tablas con Tesseract optimizado
+        3. Chunking estructural inteligente
+        4. Embeddings BGE-M3 (1024d)
+        5. Subida a Qdrant Cloud
+        """)
 # ════════════════════════════════════════════════════════════════════════════
 # 📝 FOOTER
 # ════════════════════════════════════════════════════════════════════════════
