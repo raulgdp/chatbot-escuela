@@ -185,7 +185,7 @@ OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "").strip()
 OPENAI_API_BASE = "https://openrouter.ai/api/v1"  # ✅ Hardcoded sin espacios
 
 # ✅ MODELO VÁLIDO Y DISPONIBLE EN OPENROUTER
-DEFAULT_MODEL = "meta-llama/llama-3.1-70b-instruct"  # ✅ Gratuito y estable
+DEFAULT_MODEL = "mistralai/mistral-large"  # ✅ Gratuito y estable
 
 try:
     client = OpenAI(
@@ -617,26 +617,44 @@ if prompt:
     st.session_state.messages.append({"role": "assistant", "content": full_response})
     st.session_state.metrics = metrics
     
-    # Scroll automático
-    st.markdown("""
-    <script>
-    function scrollToBottom() {
-        const bottom = document.getElementById('bottom');
-        if (bottom) bottom.scrollIntoView({behavior: 'smooth'});
-    }
-    setTimeout(scrollToBottom, 100);
-    setTimeout(scrollToBottom, 300);
-    </script>
-    """, unsafe_allow_html=True)
     
     st.rerun()
 
+# ... [todo tu código anterior] ...
+
 # ════════════════════════════════════════════════════════════════════════════
-# 📝 FOOTER
+# 📝 FOOTER (ya existente en tu código)
 # ════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="footer">
     Universidad del Valle • Grupo GUIA • ChatAcredita PRO v2.3<br>
     🌐 Avatar reducido (28px) + Señal visual clara de corrección
 </div>
+""", unsafe_allow_html=True)
+
+# ════════════════════════════════════════════════════════════════════════════
+# 🔄 SCROLL AUTOMÁTICO 100% FUNCIONAL (NUEVO - AL FINAL ABSOLUTO)
+# ════════════════════════════════════════════════════════════════════════════
+st.markdown("""
+<script>
+function forceScrollToBottom() {
+    const anchor = window.parent.document.getElementById('chat-bottom');
+    if (anchor) {
+        anchor.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        return true;
+    }
+    const messages = window.parent.document.querySelectorAll('[data-testid="stChatMessage"]');
+    if (messages.length > 0) {
+        messages[messages.length - 1].scrollIntoView({ behavior: 'smooth', block: 'end' });
+        return true;
+    }
+    const main = window.parent.document.querySelector('section.main');
+    if (main) {
+        main.scrollTop = main.scrollHeight;
+        return true;
+    }
+    return false;
+}
+[100, 300, 600, 1000, 1500, 2000].forEach(delay => setTimeout(forceScrollToBottom, delay));
+</script>
 """, unsafe_allow_html=True)
