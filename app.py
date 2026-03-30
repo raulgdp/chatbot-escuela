@@ -1,4 +1,4 @@
-# app.py - ChatAcredita PRO: Multiagente + Fuentes Visibles + Subida de Documentos
+# app.py - ChatAcredita PRO: Avatar pequeño + Señal de corrección visible
 import streamlit as st
 import os
 import time
@@ -88,7 +88,7 @@ def get_secret(key, default=None):
         return os.getenv(key, default)
 
 # ════════════════════════════════════════════════════════════════════════════
-# 🎨 CSS PERSONALIZADO
+# 🎨 CSS PERSONALIZADO (AVATAR MÁS PEQUEÑO + SEÑALES DE ESTADO)
 # ════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <style>
@@ -104,6 +104,40 @@ header {visibility:hidden;}
 .footer {
     position:fixed; bottom:65px; left:0; right:0;
     text-align:center; font-size:11px; color:#999;
+}
+.thinking-avatar {
+    position: fixed; bottom: 90px; right: 20px;
+    background: white; padding: 8px 12px;
+    border-radius: 10px;
+    box-shadow: 0px 3px 10px rgba(0,0,0,0.20);
+    display: flex; align-items: center; gap: 8px;
+    z-index:9999;
+    font-size: 0.92em;
+}
+.avatar-img {
+    border-radius:50%;
+    width:28px;  /* ✅ REDUCIDO DE 38px A 28px */
+    height:28px;
+}
+.status-analizando { background: #e3f2fd; border-left: 3px solid #2196f3; color: #1565c0; }
+.status-recuperando { background: #e8f5e9; border-left: 3px solid #4caf50; color: #2e7d32; }
+.status-corrigiendo {
+    background: #fff3e0;
+    border-left: 4px solid #ff9800;
+    color: #e65100;
+    animation: pulse 1.5s infinite;
+}
+.status-generando { background: #f3e5f5; border-left: 3px solid #9c27b0; color: #4a148c; }
+.status-listo {
+    background: #e8f5e9;
+    border-left: 4px solid #4caf50;
+    color: #2e7d32;
+    box-shadow: 0 0 12px rgba(76, 175, 80, 0.4);
+}
+@keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(255, 152, 0, 0.4); }
+    70% { box-shadow: 0 0 0 8px rgba(255, 152, 0, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(255, 152, 0, 0); }
 }
 .source-badge {
     display: inline-block;
@@ -122,6 +156,16 @@ header {visibility:hidden;}
     border-left: 3px solid #2196f3;
     border-radius: 0 8px 8px 0;
 }
+.feedback-indicator {
+    display: inline-block;
+    background: #fff3e0;
+    color: #e65100;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.8em;
+    margin-left: 8px;
+    border: 1px solid #ffcc80;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -135,13 +179,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════════════════════════
-# 🔌 CONFIGURACIÓN DE APIs (CORREGIDO - SIN ESPACIOS + MODELO VÁLIDO)
+# 🔌 CONFIGURACIÓN DE APIs (CORREGIDO - MODELO VÁLIDO)
 # ════════════════════════════════════════════════════════════════════════════
 OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "").strip()
 OPENAI_API_BASE = "https://openrouter.ai/api/v1"  # ✅ Hardcoded sin espacios
 
 # ✅ MODELO VÁLIDO Y DISPONIBLE EN OPENROUTER
-DEFAULT_MODEL = "mistralai/mistral-large"  # ✅ Gratuito y estable
+DEFAULT_MODEL = "meta-llama/llama-3.1-70b-instruct"  # ✅ Gratuito y estable
 
 try:
     client = OpenAI(
@@ -382,12 +426,11 @@ class RAGSystem:
                         }
                     )]
                 )
-                st.sidebar.success("✅ Retroalimentación guardada")
-                return corrected, all_sources, {"latency": latency, "intent": intent}
+                return corrected, all_sources, {"latency": latency, "intent": intent, "corrected": True}
             except:
                 pass
         
-        return answer, all_sources, {"latency": latency, "intent": intent}
+        return answer, all_sources, {"latency": latency, "intent": intent, "corrected": False}
 
 rag_system = RAGSystem()
 
@@ -420,7 +463,7 @@ else:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "metrics" not in st.session_state:
-    st.session_state.metrics = {"latency": 0, "intent": "pregunta"}
+    st.session_state.metrics = {"latency": 0, "intent": "pregunta", "corrected": False}
 
 st.title("💬 Chat Académico EISC")
 
@@ -471,7 +514,7 @@ with st.sidebar:
     st.metric("👥 Visitas", st.session_state.visits)
 
 # ════════════════════════════════════════════════════════════════════════════
-# 📥 MANEJO DE INPUT DEL USUARIO
+# 📥 MANEJO DE INPUT DEL USUARIO (CON AVATAR PEQUEÑO + SEÑAL DE CORRECCIÓN)
 # ════════════════════════════════════════════════════════════════════════════
 avatar_base64 = get_base64_image("data/yo.webp") or "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhESMIAAAAABJRU5ErkJggg=="
 
@@ -489,21 +532,70 @@ if prompt:
         st.markdown(prompt)
     
     thinking = st.empty()
+    
+    # ✅ ETAPA 1: Analizando intención (avatar pequeño)
     with thinking.container():
         st.markdown(f"""
-        <div class="thinking-avatar">
+        <div class="thinking-avatar status-analizando">
             <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
-            <span>🧠 Analizando...</span>
+            <span>🧠 Analizando intención...</span>
+        </div>
+        """, unsafe_allow_html=True)
+        time.sleep(0.3)
+    
+    # Clasificar intención
+    intent = classify_feedback(prompt, last_answer)
+    
+    # ✅ ETAPA 2: Recuperando información
+    with thinking.container():
+        st.markdown(f"""
+        <div class="thinking-avatar status-recuperando">
+            <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
+            <span>🔍 Recuperando información...</span>
         </div>
         """, unsafe_allow_html=True)
         time.sleep(0.3)
     
     # Generar respuesta + fuentes
     answer, sources, metrics = rag_system.run(prompt, last_answer)
+    
+    # ✅ ETAPA 3: Corrigiendo respuesta (SEÑAL CLARA DE CORRECCIÓN)
+    if metrics.get("corrected", False):
+        with thinking.container():
+            st.markdown(f"""
+            <div class="thinking-avatar status-corrigiendo">
+                <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
+                <span>🔄 Corrigiendo respuesta con tu feedback...</span>
+            </div>
+            """, unsafe_allow_html=True)
+            time.sleep(1.0)
+    else:
+        with thinking.container():
+            st.markdown(f"""
+            <div class="thinking-avatar status-generando">
+                <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
+                <span>✍️ Generando respuesta...</span>
+            </div>
+            """, unsafe_allow_html=True)
+            time.sleep(0.5)
+    
+    # ✅ ETAPA 4: Respuesta lista
+    with thinking.container():
+        st.markdown(f"""
+        <div class="thinking-avatar status-listo">
+            <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
+            <span>✅ Respuesta lista</span>
+        </div>
+        """, unsafe_allow_html=True)
+        time.sleep(0.8)
+    
     thinking.empty()
     
-    # Mostrar respuesta con fuentes
+    # Mostrar respuesta con fuentes y señal de corrección si aplica
     with st.chat_message("assistant"):
+        if metrics.get("corrected", False):
+            st.markdown(f'<span style="color:#e65100; font-weight:bold;">✏️ Respuesta corregida según tu feedback</span>', unsafe_allow_html=True)
+        
         st.markdown(answer)
         
         # ✅ MOSTRAR FUENTES AL FINAL DE LA RESPUESTA
@@ -516,8 +608,11 @@ if prompt:
     
     # Guardar respuesta completa con fuentes en el historial
     full_response = answer
+    if metrics.get("corrected", False):
+        full_response = f'<span class="feedback-indicator">✏️ Corregido</span><br>' + full_response
     if sources:
-        full_response += f'\n\n<div class="sources-container"><strong>📚 Fuentes:</strong> {", ".join(sources)}</div>'
+        source_list = ", ".join(sources)
+        full_response += f'<br><br><div class="sources-container"><strong>📚 Fuentes:</strong> {source_list}</div>'
     
     st.session_state.messages.append({"role": "assistant", "content": full_response})
     st.session_state.metrics = metrics
@@ -541,7 +636,7 @@ if prompt:
 # ════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="footer">
-    Universidad del Valle • Grupo GUIA • ChatAcredita PRO v2.2<br>
-    🌐 Sistema Multiagente con Fuentes Visibles y Persistencia de Feedback
+    Universidad del Valle • Grupo GUIA • ChatAcredita PRO v2.3<br>
+    🌐 Avatar reducido (28px) + Señal visual clara de corrección
 </div>
 """, unsafe_allow_html=True)
