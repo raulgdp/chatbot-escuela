@@ -1,4 +1,4 @@
-# app.py - ChatAcredita PRO: Multiagente + Subida de Documentos (CORREGIDO - SIN ERRORES DE SINTAXIS)
+# app.py - ChatAcredita PRO: Multiagente + Subida de Documentos (CORREGIDO 100%)
 import streamlit as st
 import os
 import time
@@ -130,7 +130,7 @@ st.markdown("""
 # 🔌 CONFIGURACIÓN DE APIs (CORREGIDO - SIN ESPACIOS + MODELO VÁLIDO)
 # ════════════════════════════════════════════════════════════════════════════
 OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "").strip()
-OPENAI_API_BASE = get_secret("OPENAI_API_BASE", "https://openrouter.ai/api/v1").strip()  # ✅ SIN ESPACIOS
+OPENAI_API_BASE = "https://openrouter.ai/api/v1"  # ✅ Hardcoded sin espacios
 
 # ✅ MODELO VÁLIDO Y DISPONIBLE EN OPENROUTER
 DEFAULT_MODEL = "meta-llama/llama-3.1-70b-instruct"  # ✅ Gratuito y estable
@@ -147,7 +147,7 @@ except Exception as e:
     st.sidebar.info("""
     🔑 Verifica en Settings → Secrets:
     • OPENAI_API_KEY = sk-or-v1-...
-    • OPENAI_API_BASE = https://openrouter.ai/api/v1 (SIN ESPACIOS AL FINAL)
+    • OPENAI_API_BASE = https://openrouter.ai/api/v1 (SIN ESPACIOS)
     """)
 
 try:
@@ -172,7 +172,7 @@ except Exception as e:
     st.stop()
 
 # ════════════════════════════════════════════════════════════════════════════
-# 📦 EMBEDDING MODEL
+# 📦 EMBEDDING MODEL (BGE-M3 1024d)
 # ════════════════════════════════════════════════════════════════════════════
 @st.cache_resource
 def load_embedder():
@@ -182,7 +182,7 @@ embedder = load_embedder()
 st.sidebar.success("✅ Embeddings: BGE-M3 (1024d)")
 
 # ════════════════════════════════════════════════════════════════════════════
-# 📤 PROCESAMIENTO DE DOCUMENTOS (SIN TESSERACT)
+# 📤 PROCESAMIENTO DE DOCUMENTOS SUBIDOS (SIN TESSERACT)
 # ════════════════════════════════════════════════════════════════════════════
 def process_uploaded_document(pdf_bytes, filename):
     """Procesa PDF SIN Tesseract (solo PyMuPDF4LLM)"""
@@ -486,24 +486,6 @@ if prompt:
     <script>
     function scrollToBottom() {
         const bottom = document.getElementById('bottom');
-        if (bottom) bottom.scrollIntoView({behavior: 'smooth'});
-    }
-    setTimeout(scrollToBottom, 100);
-    setTimeout(scrollToBottom, 300);
-    </script>
-    """, unsafe_allow_html=True)
-    
-    st.rerun()
-
-# ════════════════════════════════════════════════════════════════════════════
-# 📝 FOOTER
-# ════════════════════════════════════════════════════════════════════════════
-st.markdown("""
-<div class="footer">
-    Universidad del Valle • Grupo GUIA • ChatAcredita PRO v2.1<br>
-    🌐 Sistema Multiagente con Persistencia de Feedback
-</div>
-""", unsafe_allow_html=True)tom');
         if (bottom) bottom.scrollIntoView({behavior: 'smooth'});
     }
     setTimeout(scrollToBottom, 100);
