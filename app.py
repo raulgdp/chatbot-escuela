@@ -1,14 +1,20 @@
-# app.py - ChatAcredita PRO: Multiagente + Subida de Documentos (Sin Tesseract)
+# app.py - ChatAcredita PRO: Multiagente + Subida de Documentos (CORREGIDO - SIN ERRORES DE SINTAXIS)
 import streamlit as st
-import os, time, json, unicodedata, base64, uuid
+import os
+import time
+import json
+import unicodedata
+import base64
+import uuid
+import re
+import tempfile
 import numpy as np
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 from rank_bm25 import BM25Okapi
-import tempfile
-import fitz  # PyMuPDF
+import fitz
 import pymupdf4llm
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -69,7 +75,7 @@ def normalize_text(text):
     return " ".join(text.lower().split())
 
 def clean_json(text):
-    text = text.replace("`json", "").replace("`", "")
+    text = re.sub(r'```json|```', '', text).strip()
     try:
         return json.loads(text)
     except:
@@ -121,11 +127,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════════════════════════
-# 🔌 CONFIGURACIÓN DE APIs (CORREGIDO PARA OPENROUTER)
+# 🔌 CONFIGURACIÓN DE APIs (CORREGIDO - SIN ESPACIOS + MODELO VÁLIDO)
 # ════════════════════════════════════════════════════════════════════════════
-# ✅ CORREGIDO: URL sin espacios + modelo válido
 OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "").strip()
-OPENAI_API_BASE = get_secret("OPENAI_API_BASE", "https://openrouter.ai/api/v1").strip()  # ✅ Sin espacios
+OPENAI_API_BASE = get_secret("OPENAI_API_BASE", "https://openrouter.ai/api/v1").strip()  # ✅ SIN ESPACIOS
 
 # ✅ MODELO VÁLIDO Y DISPONIBLE EN OPENROUTER
 DEFAULT_MODEL = "meta-llama/llama-3.1-70b-instruct"  # ✅ Gratuito y estable
@@ -135,7 +140,6 @@ try:
         api_key=OPENAI_API_KEY,
         base_url=OPENAI_API_BASE
     )
-    # Validación rápida
     _ = client.models.list()
     st.sidebar.success(f"✅ OpenRouter conectado ({DEFAULT_MODEL})")
 except Exception as e:
@@ -143,10 +147,9 @@ except Exception as e:
     st.sidebar.info("""
     🔑 Verifica en Settings → Secrets:
     • OPENAI_API_KEY = sk-or-v1-...
-    • OPENAI_API_BASE = https://openrouter.ai/api/v1 (sin espacios)
+    • OPENAI_API_BASE = https://openrouter.ai/api/v1 (SIN ESPACIOS AL FINAL)
     """)
 
-# Conexión a Qdrant Cloud
 try:
     qdrant = QdrantClient(
         url=get_secret("QDRANT_URL", "").strip(),
@@ -157,7 +160,6 @@ try:
         st.error(f"❌ Colección '{COLLECTION_NAME}' no encontrada")
         st.stop()
     
-    # Crear colección de feedback si no existe
     if FEEDBACK_COLLECTION not in [c.name for c in collections]:
         from qdrant_client.models import VectorParams, Distance
         qdrant.create_collection(
@@ -170,7 +172,7 @@ except Exception as e:
     st.stop()
 
 # ════════════════════════════════════════════════════════════════════════════
-# 📦 EMBEDDING MODEL (BGE-M3 1024d)
+# 📦 EMBEDDING MODEL
 # ════════════════════════════════════════════════════════════════════════════
 @st.cache_resource
 def load_embedder():
@@ -180,52 +182,37 @@ embedder = load_embedder()
 st.sidebar.success("✅ Embeddings: BGE-M3 (1024d)")
 
 # ════════════════════════════════════════════════════════════════════════════
-# 📤 PROCESAMIENTO DE DOCUMENTOS SUBIDOS (SIN TESSERACT)
+# 📤 PROCESAMIENTO DE DOCUMENTOS (SIN TESSERACT)
 # ════════════════════════════════════════════════════════════════════════════
 def process_uploaded_document(pdf_bytes, filename):
-    """Procesa PDF subido SIN Tesseract (solo PyMuPDF4LLM)"""
+    """Procesa PDF SIN Tesseract (solo PyMuPDF4LLM)"""
     try:
-        # Crear archivo temporal
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(pdf_bytes)
             tmp_path = tmp.name
         
-        # Extraer texto con PyMuPDF4LLM
         doc = fitz.open(tmp_path)
-        all_text = pymupdf4llm.to_markdown(doc)  # ✅ Sin Tesseract
+        all_text = pymupdf4llm.to_markdown(doc)
         doc.close()
         os.unlink(tmp_path)
         
-        # Chunking estructural
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,
-            separators=[
-                "\n\n## ", "\n\n### ", "\n\n#### ",
-                "\n\n|", "\n\n", "\n", " ", ""
-            ],
+            separators=["\n\n## ", "\n\n### ", "\n\n|", "\n\n", "\n", " ", ""],
             is_separator_regex=False,
         )
         
         chunks = splitter.split_text(all_text)
-        valid_chunks = []
-        
-        for chunk in chunks:
-            chunk = chunk.strip()
-            if len(chunk) < 100:
-                continue
-            if (re.search(r'\|[^\n]*$', chunk) and not re.search(r'\|\s*$', chunk)):
-                continue
-            valid_chunks.append(chunk)
+        valid_chunks = [c.strip() for c in chunks if len(c.strip()) > 100]
         
         return valid_chunks, [filename] * len(valid_chunks)
-        
     except Exception as e:
         st.error(f"❌ Error procesando documento: {str(e)[:100]}")
         return [], []
 
 def add_chunks_to_qdrant(chunks, sources):
-    """Añade nuevos chunks a la colección existente en Qdrant Cloud"""
+    """Añade chunks a Qdrant Cloud"""
     try:
         chunks_normalized = [normalize_text(chunk) for chunk in chunks]
         embeddings = embedder.encode(chunks_normalized, normalize_embeddings=True)
@@ -249,7 +236,6 @@ def add_chunks_to_qdrant(chunks, sources):
         qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
         st.success(f"✅ Añadidos {len(points)} chunks a Qdrant Cloud")
         return True
-        
     except Exception as e:
         st.error(f"❌ Error subiendo a Qdrant: {str(e)[:100]}")
         return False
@@ -259,7 +245,6 @@ def add_chunks_to_qdrant(chunks, sources):
 # ════════════════════════════════════════════════════════════════════════════
 def hybrid_search(query, use_feedback=False):
     collection = FEEDBACK_COLLECTION if use_feedback else COLLECTION_NAME
-    
     try:
         emb = embedder.encode([query], normalize_embeddings=True)[0]
         results = qdrant.query_points(
@@ -268,7 +253,6 @@ def hybrid_search(query, use_feedback=False):
             limit=TOP_K,
             with_payload=True
         ).points
-        
         return [r.payload["text"] for r in results if r.payload]
     except Exception as e:
         st.warning(f"⚠️ Error búsqueda: {str(e)[:50]}")
@@ -339,7 +323,6 @@ class RAGSystem:
         start = time.time()
         intent = classify_feedback(query, last_answer)
         
-        # Buscar en colecciones relevantes
         if intent == "retroalimentacion":
             docs_original = hybrid_search(query, use_feedback=False)
             docs_feedback = hybrid_search(query, use_feedback=True)
@@ -351,21 +334,15 @@ class RAGSystem:
         answer = self.answer_agent.run(query, context)
         latency = round(time.time() - start, 2)
         
-        # Corregir si es retroalimentación
         if intent == "retroalimentacion" and last_answer:
             try:
                 r = client.chat.completions.create(
                     model=DEFAULT_MODEL,
-                    messages=[{
-                        "role": "user", 
-                        "content": f"Corrige: {last_answer} basado en: {query}"
-                    }],
+                    messages=[{"role": "user", "content": f"Corrige: {last_answer} basado en: {query}"}],
                     temperature=0.2,
                     max_tokens=800
                 )
                 corrected = r.choices[0].message.content
-                
-                # Guardar en feedback collection
                 emb = embedder.encode([corrected], normalize_embeddings=True)[0]
                 qdrant.upsert(
                     collection_name=FEEDBACK_COLLECTION,
@@ -486,18 +463,16 @@ if prompt:
     with st.chat_message("user"):
         st.markdown(prompt)
     
-    # Mostrar avatar de "pensando"
     thinking = st.empty()
     with thinking.container():
         st.markdown(f"""
         <div class="thinking-avatar">
-            <img src="image/webp;base64,{avatar_base64}" class="avatar-img">
+            <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
             <span>🧠 Analizando...</span>
         </div>
         """, unsafe_allow_html=True)
         time.sleep(0.3)
     
-    # Generar respuesta
     answer, metrics = rag_system.run(prompt, last_answer)
     thinking.empty()
     
@@ -507,7 +482,6 @@ if prompt:
     st.session_state.messages.append({"role": "assistant", "content": answer})
     st.session_state.metrics = metrics
     
-    # Scroll automático
     st.markdown("""
     <script>
     function scrollToBottom() {
