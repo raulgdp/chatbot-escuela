@@ -1,6 +1,6 @@
-# app.py - ChatAcredita PRO: Multiagente + Subida de documentos + OpenRouter corregido
+# app.py - ChatAcredita PRO: Multiagente + Subida de Documentos (Sin Tesseract)
 import streamlit as st
-import os, time, json, unicodedata, base64, uuid, re, io
+import os, time, json, unicodedata, base64, uuid
 import numpy as np
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
@@ -8,23 +8,9 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 from rank_bm25 import BM25Okapi
 import tempfile
-
-# ════════════════════════════════════════════════════════════════════════════
-# 🔐 CONFIGURACIÓN DE TESSERACT (PARA PROCESAMIENTO DE DOCUMENTOS)
-# ════════════════════════════════════════════════════════════════════════════
-TESSERACT_AVAILABLE = False
-try:
-    import pytesseract
-    import cv2
-    from PIL import Image
-    
-    # Verificar disponibilidad de Tesseract
-    pytesseract.get_tesseract_version()
-    TESSERACT_AVAILABLE = True
-    st.sidebar.success("✅ Tesseract OCR disponible")
-except Exception as e:
-    st.sidebar.warning(f"⚠️ Tesseract no disponible: {str(e)[:50]}")
-    st.sidebar.info("💡 Para procesar tablas, instala Tesseract: https://github.com/UB-Mannheim/tesseract/wiki")
+import fitz  # PyMuPDF
+import pymupdf4llm
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # ════════════════════════════════════════════════════════════════════════════
 # 🔐 LOGIN SIMPLE
@@ -83,7 +69,7 @@ def normalize_text(text):
     return " ".join(text.lower().split())
 
 def clean_json(text):
-    text = re.sub(r'```json|```', '', text).strip()
+    text = text.replace("`json", "").replace("`", "")
     try:
         return json.loads(text)
     except:
@@ -194,14 +180,10 @@ embedder = load_embedder()
 st.sidebar.success("✅ Embeddings: BGE-M3 (1024d)")
 
 # ════════════════════════════════════════════════════════════════════════════
-# 📤 PROCESAMIENTO DE DOCUMENTOS SUBIDOS (CORREGIDO)
+# 📤 PROCESAMIENTO DE DOCUMENTOS SUBIDOS (SIN TESSERACT)
 # ════════════════════════════════════════════════════════════════════════════
-import fitz  # PyMuPDF
-import pymupdf4llm
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
 def process_uploaded_document(pdf_bytes, filename):
-    """Procesa PDF subido con el mismo pipeline que embeddings-T.py"""
+    """Procesa PDF subido SIN Tesseract (solo PyMuPDF4LLM)"""
     try:
         # Crear archivo temporal
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -210,59 +192,7 @@ def process_uploaded_document(pdf_bytes, filename):
         
         # Extraer texto con PyMuPDF4LLM
         doc = fitz.open(tmp_path)
-        all_text = ""
-        
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            page_text = pymupdf4llm.to_markdown(
-                doc, 
-                pages=[page_num],
-                show_progress=False,
-                page_chunks=False,
-            )
-            
-            # Detectar y procesar tablas con Tesseract si está disponible
-            has_visual = (
-                "figura" in page_text.lower() or
-                "imagen" in page_text.lower() or
-                "tabla" in page_text.lower() or
-                "cuadro" in page_text.lower() or
-                len(page.get_images()) > 0 or
-                len([b for b in page.get_text("dict").get("blocks", []) if b.get("lines")]) > 15
-            )
-            
-            if has_visual and TESSERACT_AVAILABLE:
-                try:
-                    pix = page.get_pixmap(dpi=300)
-                    img_bytes = pix.tobytes("png")
-                    img = Image.open(io.BytesIO(img_bytes))
-                    
-                    img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-                    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-                    thresh = cv2.adaptiveThreshold(
-                        gray, 255, 
-                        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                        cv2.THRESH_BINARY, 11, 2
-                    )
-                    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-                    thresh = cv2.dilate(thresh, kernel, iterations=1)
-                    
-                    custom_config = (
-                        r'--oem 3 --psm 6 -l spa+eng '
-                        r'--dpi 300 '
-                        r'-c preserve_interword_spaces=1 '
-                        r'-c tessedit_char_whitelist="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,:;()[]{}%$€#@/\\-_ñáéíóúüÁÉÍÓÚÜ°"'
-                    )
-                    
-                    table_text = pytesseract.image_to_string(thresh, config=custom_config)
-                    if table_text.strip():
-                        table_text = normalize_text(table_text)
-                        page_text += f"\n\n[TABLA PÁGINA {page_num + 1}]\n{table_text}"
-                except Exception as e:
-                    st.warning(f"⚠️ Error Tesseract en página {page_num+1}: {str(e)[:50]}")
-            
-            all_text += f"\n\n--- Página {page_num + 1} ---\n\n" + page_text
-        
+        all_text = pymupdf4llm.to_markdown(doc)  # ✅ Sin Tesseract
         doc.close()
         os.unlink(tmp_path)
         
@@ -272,7 +202,6 @@ def process_uploaded_document(pdf_bytes, filename):
             chunk_overlap=200,
             separators=[
                 "\n\n## ", "\n\n### ", "\n\n#### ",
-                "\n\n[TABLA ", "\n\n[IMAGEN ", "\n\n[FIGURA ",
                 "\n\n|", "\n\n", "\n", " ", ""
             ],
             is_separator_regex=False,
@@ -285,8 +214,7 @@ def process_uploaded_document(pdf_bytes, filename):
             chunk = chunk.strip()
             if len(chunk) < 100:
                 continue
-            if (re.search(r'\|[^\n]*$', chunk) and not re.search(r'\|\s*$', chunk)) or \
-               chunk.endswith("[TABLA") or chunk.endswith("[IMAGEN"):
+            if (re.search(r'\|[^\n]*$', chunk) and not re.search(r'\|\s*$', chunk)):
                 continue
             valid_chunks.append(chunk)
         
@@ -563,7 +491,7 @@ if prompt:
     with thinking.container():
         st.markdown(f"""
         <div class="thinking-avatar">
-            <img src="data:image/webp;base64,{avatar_base64}" class="avatar-img">
+            <img src="image/webp;base64,{avatar_base64}" class="avatar-img">
             <span>🧠 Analizando...</span>
         </div>
         """, unsafe_allow_html=True)
@@ -584,6 +512,24 @@ if prompt:
     <script>
     function scrollToBottom() {
         const bottom = document.getElementById('bottom');
+        if (bottom) bottom.scrollIntoView({behavior: 'smooth'});
+    }
+    setTimeout(scrollToBottom, 100);
+    setTimeout(scrollToBottom, 300);
+    </script>
+    """, unsafe_allow_html=True)
+    
+    st.rerun()
+
+# ════════════════════════════════════════════════════════════════════════════
+# 📝 FOOTER
+# ════════════════════════════════════════════════════════════════════════════
+st.markdown("""
+<div class="footer">
+    Universidad del Valle • Grupo GUIA • ChatAcredita PRO v2.1<br>
+    🌐 Sistema Multiagente con Persistencia de Feedback
+</div>
+""", unsafe_allow_html=True)tom');
         if (bottom) bottom.scrollIntoView({behavior: 'smooth'});
     }
     setTimeout(scrollToBottom, 100);
