@@ -1,4 +1,4 @@
-# app.py - ChatAcredita PRO: Multiagente + Subida de Documentos (CORREGIDO 100%)
+# app.py - ChatAcredita PRO: Multiagente + Fuentes Visibles + Subida de Documentos
 import streamlit as st
 import os
 import time
@@ -12,7 +12,7 @@ import numpy as np
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct
+from qdrant_client.models import PointStruct, VectorParams, Distance
 from rank_bm25 import BM25Okapi
 import fitz
 import pymupdf4llm
@@ -105,15 +105,23 @@ header {visibility:hidden;}
     position:fixed; bottom:65px; left:0; right:0;
     text-align:center; font-size:11px; color:#999;
 }
-.thinking-avatar {
-    position: fixed; bottom: 90px; right: 20px;
-    background: white; padding: 10px 14px;
+.source-badge {
+    display: inline-block;
+    background: #e3f2fd;
+    color: #1976d2;
+    padding: 3px 8px;
     border-radius: 12px;
-    box-shadow: 0px 4px 12px rgba(0,0,0,0.25);
-    display: flex; align-items: center; gap: 10px;
-    z-index:9999;
+    font-size: 0.85em;
+    margin: 2px;
+    border: 1px solid #bbdefb;
 }
-.avatar-img { border-radius:50%; width:38px; }
+.sources-container {
+    margin-top: 15px;
+    padding: 12px;
+    background: #f8fdff;
+    border-left: 3px solid #2196f3;
+    border-radius: 0 8px 8px 0;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -133,7 +141,7 @@ OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "").strip()
 OPENAI_API_BASE = "https://openrouter.ai/api/v1"  # ✅ Hardcoded sin espacios
 
 # ✅ MODELO VÁLIDO Y DISPONIBLE EN OPENROUTER
-DEFAULT_MODEL = "mistralai/mistral-large"  # ✅ Gratuito y estable
+DEFAULT_MODEL = "meta-llama/llama-3.1-70b-instruct"  # ✅ Gratuito y estable
 
 try:
     client = OpenAI(
@@ -161,7 +169,6 @@ try:
         st.stop()
     
     if FEEDBACK_COLLECTION not in [c.name for c in collections]:
-        from qdrant_client.models import VectorParams, Distance
         qdrant.create_collection(
             collection_name=FEEDBACK_COLLECTION,
             vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
@@ -241,10 +248,12 @@ def add_chunks_to_qdrant(chunks, sources):
         return False
 
 # ════════════════════════════════════════════════════════════════════════════
-# 🔍 BÚSQUEDA HÍBRIDA
+# 🔍 BÚSQUEDA HÍBRIDA CON FUENTES
 # ════════════════════════════════════════════════════════════════════════════
-def hybrid_search(query, use_feedback=False):
+def hybrid_search_with_sources(query, use_feedback=False):
+    """Busca en Qdrant y devuelve texto + fuentes"""
     collection = FEEDBACK_COLLECTION if use_feedback else COLLECTION_NAME
+    
     try:
         emb = embedder.encode([query], normalize_embeddings=True)[0]
         results = qdrant.query_points(
@@ -253,10 +262,20 @@ def hybrid_search(query, use_feedback=False):
             limit=TOP_K,
             with_payload=True
         ).points
-        return [r.payload["text"] for r in results if r.payload]
+        
+        texts = []
+        sources = set()
+        
+        for r in results:
+            if r.payload:
+                texts.append(r.payload["text"])
+                source = r.payload.get("source", "Documento desconocido")
+                sources.add(source)
+        
+        return texts, list(sources)
     except Exception as e:
         st.warning(f"⚠️ Error búsqueda: {str(e)[:50]}")
-        return []
+        return [], []
 
 # ════════════════════════════════════════════════════════════════════════════
 # 🤖 AGENTES
@@ -303,6 +322,7 @@ INSTRUCCIONES:
 - Si es conceptual → viñetas (•)
 - Si es comparativo → tabla Markdown
 - Máximo 3 párrafos
+- NO menciones las fuentes en tu respuesta (se mostrarán después automáticamente)
 """
         try:
             r = client.chat.completions.create(
@@ -323,17 +343,20 @@ class RAGSystem:
         start = time.time()
         intent = classify_feedback(query, last_answer)
         
+        # Buscar en colecciones relevantes
         if intent == "retroalimentacion":
-            docs_original = hybrid_search(query, use_feedback=False)
-            docs_feedback = hybrid_search(query, use_feedback=True)
+            docs_original, sources_original = hybrid_search_with_sources(query, use_feedback=False)
+            docs_feedback, sources_feedback = hybrid_search_with_sources(query, use_feedback=True)
             context = "\n\n".join(docs_original + docs_feedback)[:4000]
+            all_sources = list(set(sources_original + sources_feedback))
         else:
-            docs = hybrid_search(query, use_feedback=False)
+            docs, all_sources = hybrid_search_with_sources(query, use_feedback=False)
             context = "\n\n".join(docs)[:4000]
         
         answer = self.answer_agent.run(query, context)
         latency = round(time.time() - start, 2)
         
+        # Corregir si es retroalimentación
         if intent == "retroalimentacion" and last_answer:
             try:
                 r = client.chat.completions.create(
@@ -343,6 +366,8 @@ class RAGSystem:
                     max_tokens=800
                 )
                 corrected = r.choices[0].message.content
+                
+                # Guardar en feedback collection
                 emb = embedder.encode([corrected], normalize_embeddings=True)[0]
                 qdrant.upsert(
                     collection_name=FEEDBACK_COLLECTION,
@@ -358,11 +383,11 @@ class RAGSystem:
                     )]
                 )
                 st.sidebar.success("✅ Retroalimentación guardada")
-                return corrected, {"latency": latency, "intent": intent}
+                return corrected, all_sources, {"latency": latency, "intent": intent}
             except:
                 pass
         
-        return answer, {"latency": latency, "intent": intent}
+        return answer, all_sources, {"latency": latency, "intent": intent}
 
 rag_system = RAGSystem()
 
@@ -473,15 +498,31 @@ if prompt:
         """, unsafe_allow_html=True)
         time.sleep(0.3)
     
-    answer, metrics = rag_system.run(prompt, last_answer)
+    # Generar respuesta + fuentes
+    answer, sources, metrics = rag_system.run(prompt, last_answer)
     thinking.empty()
     
+    # Mostrar respuesta con fuentes
     with st.chat_message("assistant"):
         st.markdown(answer)
+        
+        # ✅ MOSTRAR FUENTES AL FINAL DE LA RESPUESTA
+        if sources:
+            st.markdown('<div class="sources-container">', unsafe_allow_html=True)
+            st.markdown("### 📚 Fuentes consultadas:")
+            source_badges = " ".join([f'<span class="source-badge">📄 {source}</span>' for source in sources])
+            st.markdown(source_badges, unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
     
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+    # Guardar respuesta completa con fuentes en el historial
+    full_response = answer
+    if sources:
+        full_response += f'\n\n<div class="sources-container"><strong>📚 Fuentes:</strong> {", ".join(sources)}</div>'
+    
+    st.session_state.messages.append({"role": "assistant", "content": full_response})
     st.session_state.metrics = metrics
     
+    # Scroll automático
     st.markdown("""
     <script>
     function scrollToBottom() {
@@ -500,7 +541,7 @@ if prompt:
 # ════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="footer">
-    Universidad del Valle • Grupo GUIA • ChatAcredita PRO v2.1<br>
-    🌐 Sistema Multiagente con Persistencia de Feedback
+    Universidad del Valle • Grupo GUIA • ChatAcredita PRO v2.2<br>
+    🌐 Sistema Multiagente con Fuentes Visibles y Persistencia de Feedback
 </div>
 """, unsafe_allow_html=True)
