@@ -141,7 +141,7 @@ OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "").strip()
 OPENAI_API_BASE = "https://openrouter.ai/api/v1"  # ✅ Hardcoded sin espacios
 
 # ✅ MODELO VÁLIDO Y DISPONIBLE EN OPENROUTER
-DEFAULT_MODEL = "meta-llama/llama-3.1-70b-instruct"  # ✅ Gratuito y estable
+DEFAULT_MODEL = "mistralai/mistral-large"  # ✅ Gratuito y estable
 
 try:
     client = OpenAI(
