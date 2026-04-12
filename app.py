@@ -73,8 +73,9 @@ header {visibility:hidden;}
 # ════════════════════════════════════════════════════════════════════════════
 # 🔌 CONEXIONES LIGERAS (SIN EMBEDDINGS LOCALES)
 # ════════════════════════════════════════════════════════════════════════════
-OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "")anthropic/claude-sonnet-4.6openrouter.ai/api/v1"
-DEFAULT_MODEL = "meta-llama/llama-3.1-8b-instruct:free"  # Modelo gratuito y ligero
+OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "").strip()
+OPENAI_API_BASE = "https://openrouter.ai/api/v1"
+DEFAULT_MODEL = "anthropic/claude-sonnet-4.6"  # Modelo gratuito y ligero
 
 try:
     client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_API_BASE)
