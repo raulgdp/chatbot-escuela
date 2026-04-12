@@ -292,16 +292,24 @@ def add_chunks_to_qdrant(chunks, sources):
         return False
 
 # ════════════════════════════════════════════════════════════════════════════
-# 🔍 BÚSQUEDA HÍBRIDA CON FUENTES
+# 🔍 BÚSQUEDA HÍBRIDA CON FUENTES (CORREGIDO - SIEMPRE USA FEEDBACK)
 # ════════════════════════════════════════════════════════════════════════════
-def hybrid_search_with_sources(query, use_feedback=False):
-    """Busca en Qdrant y devuelve texto + fuentes"""
-    collection = FEEDBACK_COLLECTION if use_feedback else COLLECTION_NAME
-    
+def hybrid_search_with_sources(query, use_feedback=True):
+    """Busca SIEMPRE en ambas colecciones y prioriza feedback validado"""
     try:
         emb = embedder.encode([query], normalize_embeddings=True)[0]
-        results = qdrant.query_points(
-            collection_name=collection,
+        
+        # Buscar en documentos originales
+        results_original = qdrant.query_points(
+            collection_name=COLLECTION_NAME,
+            query=emb.tolist(),
+            limit=TOP_K,
+            with_payload=True
+        ).points
+        
+        # Buscar en feedback validado (SIEMPRE)
+        results_feedback = qdrant.query_points(
+            collection_name=FEEDBACK_COLLECTION,
             query=emb.tolist(),
             limit=TOP_K,
             with_payload=True
@@ -310,11 +318,19 @@ def hybrid_search_with_sources(query, use_feedback=False):
         texts = []
         sources = set()
         
-        for r in results:
+        # Primero: feedback validado (prioridad máxima)
+        for r in results_feedback:
             if r.payload:
+                # Solo añadir respuestas corregidas validadas
+                if "respuesta_corregida" in r.payload.get("type", ""):
+                    texts.append(r.payload["text"])
+                    sources.add(f"✅ {r.payload.get('source', 'feedback')}")
+        
+        # Segundo: documentos originales (solo si no hay suficiente feedback)
+        for r in results_original:
+            if r.payload and len(texts) < TOP_K:
                 texts.append(r.payload["text"])
-                source = r.payload.get("source", "Documento desconocido")
-                sources.add(source)
+                sources.add(r.payload.get("source", "documento"))
         
         return texts, list(sources)
     except Exception as e:
@@ -322,22 +338,32 @@ def hybrid_search_with_sources(query, use_feedback=False):
         return [], []
 
 # ════════════════════════════════════════════════════════════════════════════
-# 🤖 AGENTES
+# 🤖 AGENTES (CORREGIDO - PREVIENE ALUCINACIONES)
 # ════════════════════════════════════════════════════════════════════════════
 def classify_feedback(prompt, last_answer=""):
+    """Mejorado: detecta retroalimentación explícita incluso si el LLM falla"""
+    prompt_lower = prompt.lower()
+    
+    # Palabras clave que indican retroalimentación explícita
+    feedback_keywords = ["corregir", "error", "mal", "incorrecto", "equivocado", "no es", "debería ser"]
+    
+    if any(keyword in prompt_lower for keyword in feedback_keywords):
+        return "retroalimentacion"
+    
+    # Si no hay palabras clave, usar el clasificador LLM
     prompt_llm = f"""
-Contexto:
-Respuesta previa: {last_answer[:300]}
-
-Nuevo mensaje del usuario:
-{prompt}
-
-Clasifica:
-- Si el usuario hace una nueva pregunta → "pregunta"
-- Si el usuario corrige o mejora la respuesta anterior → "retroalimentacion"
-
-JSON: {{"tipo": "pregunta" o "retroalimentacion"}}
-"""
+    Contexto:
+    Respuesta previa: {last_answer[:300]}
+    
+    Nuevo mensaje del usuario:
+    {prompt}
+    
+    Clasifica:
+    - Si el usuario hace una nueva pregunta → "pregunta"
+    - Si el usuario corrige o mejora la respuesta anterior → "retroalimentacion"
+    
+    JSON: {{"tipo": "pregunta" o "retroalimentacion"}}
+    """
     try:
         r = client.chat.completions.create(
             model=DEFAULT_MODEL,
@@ -351,28 +377,38 @@ JSON: {{"tipo": "pregunta" o "retroalimentacion"}}
         return "pregunta"
 
 class AnswerAgent:
-    def run(self, query, context):
+    def run(self, query, context, has_feedback=False):
+        anti_hallucination_prompt = """
+        ⚠️ ADVERTENCIA CRÍTICA:
+        - Este contexto incluye correcciones validadas por usuarios anteriores
+        - NO inventes información fuera del contexto
+        - Si el contexto no contiene información suficiente, responde: "No tengo información suficiente para responder esta pregunta"
+        - Las alucinaciones son inaceptables en este contexto académico
+        """
+        
         prompt = f"""
-Eres ChatAcredita, asistente especializado en acreditación de la EISC.
-Responde SOLO con la información del contexto proporcionado.
-
-CONTEXTO:
-{context}
-
-PREGUNTA:
-{query}
-
-INSTRUCCIONES:
-- Si es conceptual → viñetas (•)
-- Si es comparativo → tabla Markdown
-- Máximo 3 párrafos
-- NO menciones las fuentes en tu respuesta (se mostrarán después automáticamente)
-"""
+        Eres ChatAcredita, asistente especializado en acreditación de la EISC.
+        Responde SOLO con la información del contexto proporcionado.
+        
+        {anti_hallucination_prompt if has_feedback else ""}
+        
+        CONTEXTO:
+        {context}
+        
+        PREGUNTA:
+        {query}
+        
+        INSTRUCCIONES:
+        - Si es conceptual → viñetas (•)
+        - Si es comparativo → tabla Markdown
+        - Máximo 3 párrafos
+        - NO menciones las fuentes en tu respuesta
+        """
         try:
             r = client.chat.completions.create(
                 model=DEFAULT_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
+                temperature=0.1,  # ✅ Reducido para menos alucinaciones
                 max_tokens=800
             )
             return r.choices[0].message.content
@@ -387,20 +423,22 @@ class RAGSystem:
         start = time.time()
         intent = classify_feedback(query, last_answer)
         
-        # Buscar en colecciones relevantes
-        if intent == "retroalimentacion":
-            docs_original, sources_original = hybrid_search_with_sources(query, use_feedback=False)
-            docs_feedback, sources_feedback = hybrid_search_with_sources(query, use_feedback=True)
-            context = "\n\n".join(docs_original + docs_feedback)[:4000]
-            all_sources = list(set(sources_original + sources_feedback))
-        else:
-            docs, all_sources = hybrid_search_with_sources(query, use_feedback=False)
-            context = "\n\n".join(docs)[:4000]
+        # SIEMPRE buscar en ambas colecciones (no solo cuando es retroalimentacion)
+        docs_original, sources_original = hybrid_search_with_sources(query, use_feedback=True)
+        docs_feedback, sources_feedback = hybrid_search_with_sources(query, use_feedback=True)
         
-        answer = self.answer_agent.run(query, context)
+        # Combinar y eliminar duplicados
+        all_docs = list(set(docs_original + docs_feedback))
+        context = "\n\n".join(all_docs[:TOP_K * 2])[:4000]
+        all_sources = list(set(sources_original + sources_feedback))
+        
+        # Detectar si hay feedback validado en el contexto
+        has_feedback = any("respuesta_corregida" in source for source in all_sources)
+        
+        answer = self.answer_agent.run(query, context, has_feedback=has_feedback)
         latency = round(time.time() - start, 2)
         
-        # Corregir si es retroalimentación
+        # ✅ GUARDAR RETROALIMENTACIÓN EXPLÍCITA (no solo cuando el clasificador acierta)
         if intent == "retroalimentacion" and last_answer:
             try:
                 r = client.chat.completions.create(
@@ -426,6 +464,7 @@ class RAGSystem:
                         }
                     )]
                 )
+                st.sidebar.success("✅ Retroalimentación guardada y priorizada")
                 return corrected, all_sources, {"latency": latency, "intent": intent, "corrected": True}
             except:
                 pass
@@ -433,7 +472,6 @@ class RAGSystem:
         return answer, all_sources, {"latency": latency, "intent": intent, "corrected": False}
 
 rag_system = RAGSystem()
-
 # ════════════════════════════════════════════════════════════════════════════
 # 👥 CONTADOR DE VISITAS
 # ════════════════════════════════════════════════════════════════════════════
