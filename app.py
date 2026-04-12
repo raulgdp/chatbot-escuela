@@ -203,11 +203,4 @@ if prompt:
 st.markdown("""<script>setTimeout(()=>{const e=document.getElementById('chat-bottom');if(e)e.scrollIntoView({behavior:'smooth'})},300);</script>""", unsafe_allow_html=True)
 
 # Limpiar memoria periódicamente
-gc.collect()t;
-        return true;
-    }
-    return false;
-}
-[100, 300, 600, 1000, 1500, 2000].forEach(delay => setTimeout(forceScrollToBottom, delay));
-</script>
-""", unsafe_allow_html=True)
+gc.collect()
