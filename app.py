@@ -226,7 +226,7 @@ st.markdown("""
 OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "").strip()
 OPENAI_API_BASE = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL   = "mistralai/mistral-large"
-FAST_MODEL      = "mistralai/mistral-small"  # Para clasificación rápida
+FAST_MODEL      = "openai/gpt-4o-mini"  # Para clasificación rápida
 
 try:
     client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_API_BASE)
