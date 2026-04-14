@@ -225,7 +225,7 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════════════════════
 OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "").strip()
 OPENAI_API_BASE = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL   = "mistralai/mistral-large"
+DEFAULT_MODEL   = "qwen/qwen3.5-397b-a17b"
 FAST_MODEL      = "openai/gpt-4o-mini"  # Para clasificación rápida
 
 try:
@@ -958,18 +958,13 @@ Responde SOLO JSON:
 }}
 """
 
-        try:
-            r = client.chat.completions.create(
-                model=FAST_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                max_tokens=400,
-            )
-            data = clean_json(r.choices[0].message.content)
-        except Exception as _e:
-            data = {"thought": f"Error: {_e}", "action": "finish", "input": {}}
-            if not last_results:
-                last_results = hybrid_search_rrf(query, [query])[:TOP_K_FINAL]
+        r = client.chat.completions.create(
+            model=FAST_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
+
+        data = clean_json(r.choices[0].message.content)
         action = data.get("action", "finish")
         thought = data.get("thought", "")
 
@@ -987,12 +982,8 @@ Responde SOLO JSON:
             last_results = reranked
             scratchpad += f"\nObservation: {str(reranked[:2])}\n"
 
-        # ACCION NO RECONOCIDA: forzar finish
-        elif action not in ("search", "rerank", "finish"):
-            action = "finish"
-
         # FINISH
-        if action == "finish":
+        elif action == "finish":
             context = "\n\n".join(r["text"] for r in last_results)[:4000]
 
             answer = ""
@@ -1014,24 +1005,7 @@ Responde SOLO JSON:
                 "scratchpad": scratchpad
             }
 
-    # Fallback: usar resultados acumulados
-    if not last_results:
-        last_results = hybrid_search_rrf(query, [query])[:TOP_K_FINAL]
-    ctx_fb = "\n\n".join(r["text"] for r in last_results)[:4000]
-    fb_answer = ""
-    try:
-        for tok in AnswerAgentV2().stream(
-            query=query, context=ctx_fb, memory_ctx=memory_ctx,
-            agent_type="general", sources=[r["source"] for r in last_results]
-        ):
-            fb_answer += tok
-    except Exception:
-        fb_answer = "Lo siento, no se pudo generar una respuesta. Por favor intenta de nuevo."
-    return {
-        "answer": fb_answer,
-        "sources": [r["source"] for r in last_results],
-        "scores": {},
-    }
+    return {"answer": "No se pudo completar", "sources": [], "scores": {}}
 # ══════════════════════════════════════════════════════════════════════════════
 # SISTEMA RAG PRINCIPAL — INTEGRA TODAS LAS MEJORAS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1116,7 +1090,6 @@ class RAGSystemV3:
         context = "\n\n---\n\n".join(r["text"] for r in reranked)[:4500]
         sources = list({r["source"] for r in reranked if r["source"] != "desconocido"})
         results["sources"] = sources
-        results["context_used"] = context[:1200]  # reutilizar en evaluacion
 
         # ── ETAPA 6: Routing de agentes (M5) ──────────────────────────────
         agent_type = route_query(query)
@@ -1369,8 +1342,9 @@ if prompt:
             stream_placeholder.markdown(full_answer)  # Versión final sin cursor
 
         # ── M7: Evaluar calidad (post-streaming) ───────────────────────────
-        # Reusar contexto del pipeline (no hacer busqueda extra)
-        context_for_eval = rag_result.get("context_used", full_answer[:1200])
+        context_for_eval = "\n\n".join(
+            r["text"] for r in hybrid_search_rrf(prompt_clean, [prompt_clean])[:3]
+        )
         status_ph.markdown(
             f'<div class="thinking-avatar status-evaluando">'
             f'<span>🔬 Evaluando calidad...</span></div>',
@@ -1417,7 +1391,7 @@ if prompt:
         rating_cols = st.columns(5)
         rating_labels = ["😞 Muy mala", "😕 Mala", "😐 Regular", "🙂 Buena", "😄 Excelente"]
         for i, (col, label) in enumerate(zip(rating_cols, rating_labels)):
-            if col.button(label.split()[0], key=f"rating_btn_{i}_{len(st.session_state.messages)}", help=label):
+            if col.button(label.split()[0], key=f"r_{uuid.uuid4()}", help=label):
                 result_code = save_feedback_dedup(
                     query=prompt_clean,
                     answer=full_answer,
