@@ -225,7 +225,7 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════════════════════
 OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "").strip()
 OPENAI_API_BASE = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL   = "mistralai/mistral-large-2512"
+DEFAULT_MODEL   = "deepseek/deepseek-v3.2-speciale"
 FAST_MODEL      = "openai/gpt-4o-mini"  # Para clasificación rápida
 
 try:
