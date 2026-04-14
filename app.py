@@ -1316,21 +1316,34 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SCROLL AUTOMÁTICO
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
+# 🔄 SCROLL AUTOMÁTICO MEJORADO (EJECUTAR DESPUÉS DE RENDERIZAR)
+# ════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <script>
 function scrollToBottom() {
-    const msgs = window.parent.document.querySelectorAll('[data-testid="stChatMessage"]');
-    if (msgs.length > 0) {
-        msgs[msgs.length - 1].scrollIntoView({ behavior: 'smooth', block: 'end' });
+    // Estrategia 1: Contenedor principal de Streamlit
+    const main = window.parent.document.querySelector('section.main');
+    if (main) {
+        main.scrollTop = main.scrollHeight;
         return true;
     }
-    const main = window.parent.document.querySelector('section.main');
-    if (main) { main.scrollTop = main.scrollHeight; return true; }
+    
+    // Estrategia 2: Último mensaje del chat
+    const messages = window.parent.document.querySelectorAll('[data-testid="stChatMessage"]');
+    if (messages.length > 0) {
+        messages[messages.length - 1].scrollIntoView({ behavior: 'smooth', block: 'end' });
+        return true;
+    }
+    
+    // Estrategia 3: Scroll hasta el fondo de la ventana
+    window.parent.scrollTo(0, window.parent.document.body.scrollHeight);
     return false;
 }
-[200, 500, 900, 1400, 2000].forEach(d => setTimeout(scrollToBottom, d));
+
+// Ejecutar múltiples veces con delays crecientes (clave para que funcione)
+[100, 300, 500, 800, 1200, 1800, 2500].forEach(delay => 
+    setTimeout(scrollToBottom, delay)
+);
 </script>
 """, unsafe_allow_html=True)
