@@ -900,112 +900,6 @@ def add_chunks_to_qdrant(chunks: list[str], sources: list[str]) -> bool:
         st.error(f"❌ Error subiendo a Qdrant: {str(e)[:120]}")
         return False
         
-# ═══════════════════════════════════════════════════════════════════════
-# 🔥 REACT TOOLS
-# ═══════════════════════════════════════════════════════════════════════
-class Tool:
-    def __init__(self, name, description, func):
-        self.name = name
-        self.description = description
-        self.func = func
-
-def tool_search(query: str, variants: list[str]):
-    return hybrid_search_rrf(query, variants)
-
-def tool_rerank(query: str, results: list[dict]):
-    return rerank_results(query, results)
-
-def tool_evaluate(query: str, context: str, answer: str):
-    return evaluate_response(query, context, answer)
-
-TOOLS = {
-    "search": Tool("search", "Buscar en Qdrant + BM25", tool_search),
-    "rerank": Tool("rerank", "Reordenar resultados", tool_rerank),
-    "evaluate": Tool("evaluate", "Evaluar respuesta", tool_evaluate),
-}
-# ═══════════════════════════════════════════════════════════════════════
-# 🔁 REACT AGENT LOOP
-# ═══════════════════════════════════════════════════════════════════════
-def react_agent(query: str, memory_ctx: str, max_steps: int = 3):
-
-    scratchpad = ""
-    last_results = []
-
-    for step in range(max_steps):
-
-        prompt = f"""
-Eres un agente ReAct experto en acreditación EISC.
-
-Herramientas:
-- search(query, variants)
-- rerank(query, results)
-- finish
-
-Historial:
-{memory_ctx}
-
-Pregunta:
-{query}
-
-Scratchpad:
-{scratchpad}
-
-Responde SOLO JSON:
-{{
- "thought": "...",
- "action": "search | rerank | finish",
- "input": {{}}
-}}
-"""
-
-        r = client.chat.completions.create(
-            model=FAST_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0
-        )
-
-        data = clean_json(r.choices[0].message.content)
-        action = data.get("action", "finish")
-        thought = data.get("thought", "")
-
-        scratchpad += f"\nThought: {thought}\nAction: {action}"
-
-        # SEARCH
-        if action == "search":
-            results = TOOLS["search"].func(query, [query])
-            last_results = results
-            scratchpad += f"\nObservation: {str(results[:2])}\n"
-
-        # RERANK
-        elif action == "rerank":
-            reranked = TOOLS["rerank"].func(query, last_results)
-            last_results = reranked
-            scratchpad += f"\nObservation: {str(reranked[:2])}\n"
-
-        # FINISH
-        elif action == "finish":
-            context = "\n\n".join(r["text"] for r in last_results)[:4000]
-
-            answer = ""
-            for token in AnswerAgentV2().stream(
-                query=query,
-                context=context,
-                memory_ctx=memory_ctx,
-                agent_type="general",
-                sources=[r["source"] for r in last_results],
-            ):
-                answer += token
-
-            scores = TOOLS["evaluate"].func(query, context, answer)
-
-            return {
-                "answer": answer,
-                "sources": [r["source"] for r in last_results],
-                "scores": scores,
-                "scratchpad": scratchpad
-            }
-
-    return {"answer": "No se pudo completar", "sources": [], "scores": {}}
 # ══════════════════════════════════════════════════════════════════════════════
 # SISTEMA RAG PRINCIPAL — INTEGRA TODAS LAS MEJORAS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1131,21 +1025,17 @@ class RAGSystemV3:
             results["tokens"] = single_token()
             return results
 
-        # ── ETAPA 8: Generación con streaming (M6 + M8) ───────────────────
-        #show_status("status-generando", "✍️ Generando respuesta...")
-        # ── ETAPA 8: GENERACIÓN CON REACT (NUEVO)
-
-        react_result = react_agent(query, memory_ctx)
-
-        # Simular streaming (compatibilidad con tu UI)
-        def generator():
-           yield react_result["answer"]
-
-        results["tokens"] = generator()
-        results["sources"] = react_result.get("sources", sources)
-        results["scores"] = react_result.get("scores", {})
-        results["scratchpad"] = react_result.get("scratchpad", "")
-       # results["tokens"] = token_gen
+        # ── ETAPA 8: Generación con streaming real (M6 + M8) ─────────────
+        show_status("status-generando", "✍️ Generando respuesta...")
+        token_gen = self.answer_agent.stream(
+            query=query,
+            context=context,
+            memory_ctx=memory_ctx,
+            agent_type=agent_type,
+            sources=sources,
+        )
+        results["tokens"] = token_gen
+        results["context_used"] = context[:1200]
 
         # Métricas pre-evaluación (la evaluación se hace post-streaming)
         results["metrics"] = {
@@ -1342,9 +1232,8 @@ if prompt:
             stream_placeholder.markdown(full_answer)  # Versión final sin cursor
 
         # ── M7: Evaluar calidad (post-streaming) ───────────────────────────
-        context_for_eval = "\n\n".join(
-            r["text"] for r in hybrid_search_rrf(prompt_clean, [prompt_clean])[:3]
-        )
+        # Reusar contexto ya recuperado — no hacer búsqueda extra
+        context_for_eval = rag_result.get("context_used", full_answer[:1200])
         status_ph.markdown(
             f'<div class="thinking-avatar status-evaluando">'
             f'<span>🔬 Evaluando calidad...</span></div>',
@@ -1391,7 +1280,7 @@ if prompt:
         rating_cols = st.columns(5)
         rating_labels = ["😞 Muy mala", "😕 Mala", "😐 Regular", "🙂 Buena", "😄 Excelente"]
         for i, (col, label) in enumerate(zip(rating_cols, rating_labels)):
-            if col.button(label.split()[0], key=f"r_{uuid.uuid4()}", help=label):
+            if col.button(label.split()[0], key=f"rating_btn_{i}_{len(st.session_state.messages)}", help=label):
                 result_code = save_feedback_dedup(
                     query=prompt_clean,
                     answer=full_answer,
