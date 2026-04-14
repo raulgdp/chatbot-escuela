@@ -225,7 +225,7 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════════════════════
 OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "").strip()
 OPENAI_API_BASE = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL   = "mistralai/mistral-large"
+DEFAULT_MODEL   = "anthropic/claude-opus-4.6-fast"
 FAST_MODEL      = "openai/gpt-4o-mini"  # Para clasificación rápida
 
 try:
@@ -1316,34 +1316,21 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ════════════════════════════════════════════════════════════════════════════
-# 🔄 SCROLL AUTOMÁTICO MEJORADO (EJECUTAR DESPUÉS DE RENDERIZAR)
-# ════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# SCROLL AUTOMÁTICO
+# ══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <script>
 function scrollToBottom() {
-    // Estrategia 1: Contenedor principal de Streamlit
+    const msgs = window.parent.document.querySelectorAll('[data-testid="stChatMessage"]');
+    if (msgs.length > 0) {
+        msgs[msgs.length - 1].scrollIntoView({ behavior: 'smooth', block: 'end' });
+        return true;
+    }
     const main = window.parent.document.querySelector('section.main');
-    if (main) {
-        main.scrollTop = main.scrollHeight;
-        return true;
-    }
-    
-    // Estrategia 2: Último mensaje del chat
-    const messages = window.parent.document.querySelectorAll('[data-testid="stChatMessage"]');
-    if (messages.length > 0) {
-        messages[messages.length - 1].scrollIntoView({ behavior: 'smooth', block: 'end' });
-        return true;
-    }
-    
-    // Estrategia 3: Scroll hasta el fondo de la ventana
-    window.parent.scrollTo(0, window.parent.document.body.scrollHeight);
+    if (main) { main.scrollTop = main.scrollHeight; return true; }
     return false;
 }
-
-// Ejecutar múltiples veces con delays crecientes (clave para que funcione)
-[100, 300, 500, 800, 1200, 1800, 2500].forEach(delay => 
-    setTimeout(scrollToBottom, delay)
-);
+[200, 500, 900, 1400, 2000].forEach(d => setTimeout(scrollToBottom, d));
 </script>
 """, unsafe_allow_html=True)
