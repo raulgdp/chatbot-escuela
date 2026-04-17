@@ -373,8 +373,7 @@ Solo JSON sin markdown."""
 # ══════════════════════════════════════════════════════════════════════════════
 @st.cache_resource(ttl=3600)
 def build_bm25_index() -> tuple:
-    """Carga todos los chunks de Qdrant y construye el índice BM25.
-    Usa text_norm (normalizado) para el índice BM25 y text (original) para display."""
+    """Carga todos los chunks de Qdrant y construye el índice BM25."""
     all_texts, all_ids, all_sources = [], [], []
     offset = None
 
@@ -389,7 +388,6 @@ def build_bm25_index() -> tuple:
             )
             for point in result[0]:
                 if point.payload and point.payload.get("text"):
-                    # M12.1: usar texto original para display
                     all_texts.append(point.payload["text"])
                     all_ids.append(point.id)
                     all_sources.append(point.payload.get("source", "desconocido"))
@@ -397,7 +395,6 @@ def build_bm25_index() -> tuple:
             if offset is None:
                 break
 
-        # M12.1: tokenizar con texto normalizado para mejor recall BM25
         tokenized = [normalize_text(t).split() for t in all_texts]
         bm25 = BM25Okapi(tokenized)
         return bm25, all_texts, all_ids, all_sources
@@ -828,73 +825,8 @@ def save_feedback_dedup(
         return "error"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# M12 · PROCESAMIENTO DE DOCUMENTOS — MEJORADO
+# M12 · PROCESAMIENTO ASYNC DE DOCUMENTOS
 # ══════════════════════════════════════════════════════════════════════════════
-# Mejoras:
-#   M12.1  Texto original preservado en payload (legible) + normalizado solo
-#          para embedding/BM25 → respuestas con acentos y formato correcto
-#   M12.2  Deduplicación por hash SHA-256 del contenido del chunk →
-#          evita duplicados si se sube el mismo PDF dos veces
-#   M12.3  Detección de duplicado a nivel de archivo completo (hash del PDF)
-#   M12.4  Tablas protegidas como chunks completos → no se cortan a la mitad
-#   M12.5  Metadata enriquecida: número de página, sección/encabezado padre,
-#          hash del documento origen → trazabilidad y filtrado
-#   M12.6  Barra de progreso durante la indexación
-#   M12.7  Estadísticas post-ingesta visibles en el sidebar
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _hash_content(content: str) -> str:
-    """Genera hash SHA-256 del contenido para deduplicación."""
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
-
-
-def _hash_pdf(pdf_bytes: bytes) -> str:
-    """Genera hash SHA-256 del archivo PDF completo."""
-    return hashlib.sha256(pdf_bytes).hexdigest()
-
-
-def _check_pdf_already_indexed(pdf_hash: str) -> bool:
-    """Verifica si un PDF con este hash ya fue indexado en Qdrant."""
-    try:
-        result = qdrant.scroll(
-            collection_name=COLLECTION_NAME,
-            scroll_filter={
-                "must": [{"key": "doc_hash", "match": {"value": pdf_hash}}]
-            },
-            limit=1,
-            with_payload=False,
-            with_vectors=False,
-        )
-        return len(result[0]) > 0
-    except Exception:
-        return False
-
-
-def _get_existing_chunk_hashes() -> set[str]:
-    """Recupera todos los chunk_hash existentes en Qdrant para deduplicación."""
-    hashes = set()
-    offset = None
-    try:
-        while True:
-            result = qdrant.scroll(
-                collection_name=COLLECTION_NAME,
-                limit=500,
-                offset=offset,
-                with_payload=["chunk_hash"],
-                with_vectors=False,
-            )
-            for point in result[0]:
-                h = point.payload.get("chunk_hash")
-                if h:
-                    hashes.add(h)
-            offset = result[1]
-            if offset is None:
-                break
-    except Exception:
-        pass
-    return hashes
-
-
 def embed_chunks_parallel(chunks: list[str], batch_size: int = 32) -> np.ndarray:
     """Genera embeddings en batches paralelos usando ThreadPoolExecutor."""
     batches = [chunks[i:i + batch_size] for i in range(0, len(chunks), batch_size)]
@@ -907,269 +839,66 @@ def embed_chunks_parallel(chunks: list[str], batch_size: int = 32) -> np.ndarray
 
     return np.vstack(results)
 
-
-def _extract_tables_and_text(markdown_text: str) -> list[dict]:
-    """
-    M12.4 — Separa el markdown en bloques de texto y tablas completas.
-    Las tablas se mantienen íntegras como un solo chunk.
-    Retorna lista de {"content": str, "type": "text"|"table", "section": str}
-    """
-    blocks = []
-    current_section = "General"
-    lines = markdown_text.split("\n")
-    i = 0
-
-    while i < len(lines):
-        line = lines[i]
-
-        # Detectar encabezados para tracking de sección
-        if line.startswith("## "):
-            current_section = line.lstrip("# ").strip()[:80]
-        elif line.startswith("### "):
-            current_section = line.lstrip("# ").strip()[:80]
-
-        # Detectar inicio de tabla (línea que empieza con |)
-        if line.strip().startswith("|"):
-            table_lines = []
-            while i < len(lines) and lines[i].strip().startswith("|"):
-                table_lines.append(lines[i])
-                i += 1
-            table_text = "\n".join(table_lines).strip()
-            if len(table_text) > 40:  # Tabla con contenido real
-                blocks.append({
-                    "content": table_text,
-                    "type":    "table",
-                    "section": current_section,
-                })
-            continue
-
-        # Texto normal: acumular hasta encontrar tabla o encabezado
-        text_lines = []
-        while i < len(lines) and not lines[i].strip().startswith("|"):
-            text_lines.append(lines[i])
-            # Si encontramos un nuevo encabezado, lo procesamos en la próxima iteración
-            if lines[i].startswith("## ") or lines[i].startswith("### "):
-                current_section = lines[i].lstrip("# ").strip()[:80]
-            i += 1
-        text_block = "\n".join(text_lines).strip()
-        if len(text_block) > 30:
-            blocks.append({
-                "content": text_block,
-                "type":    "text",
-                "section": current_section,
-            })
-
-    return blocks
-
-
-def _extract_page_mapping(doc: fitz.Document) -> dict[str, int]:
-    """
-    M12.5 — Crea un mapeo aproximado de texto a número de página.
-    Retorna dict con los primeros 60 chars de cada página como clave.
-    """
-    page_map = {}
-    for page_num in range(len(doc)):
-        page = doc[page_num]
-        text = page.get_text("text")[:120].strip()
-        if text:
-            # Guardar los primeros N caracteres como clave
-            key = text[:60].lower().replace("\n", " ")
-            page_map[key] = page_num + 1
-    return page_map
-
-
-def _find_page_for_chunk(chunk_text: str, page_map: dict[str, int]) -> int:
-    """Busca la página más probable para un chunk dado."""
-    chunk_start = chunk_text[:60].lower().replace("\n", " ")
-    best_page = 0
-    best_overlap = 0
-    for key, page_num in page_map.items():
-        # Calcular overlap de caracteres
-        overlap = sum(1 for a, b in zip(chunk_start, key) if a == b)
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_page = page_num
-    return best_page if best_overlap > 15 else 0
-
-
-def process_uploaded_document(
-    pdf_bytes: bytes, filename: str
-) -> tuple[list[dict], str]:
-    """
-    Procesa PDF con PyMuPDF4LLM y chunking estructural mejorado.
-
-    Retorna:
-        - Lista de dicts con {text, text_normalized, section, page, type, chunk_hash}
-        - Hash del documento PDF
-    """
+def process_uploaded_document(pdf_bytes: bytes, filename: str) -> tuple[list, list]:
+    """Procesa PDF con PyMuPDF4LLM y chunking estructural."""
     try:
-        pdf_hash = _hash_pdf(pdf_bytes)
-
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(pdf_bytes)
             tmp_path = tmp.name
 
-        doc = fitz.open(tmp_path)
-        page_map = _extract_page_mapping(doc)
+        doc      = fitz.open(tmp_path)
         all_text = pymupdf4llm.to_markdown(doc)
         doc.close()
         os.unlink(tmp_path)
 
-        # M12.4: Separar tablas como bloques completos
-        blocks = _extract_tables_and_text(all_text)
-
-        # Splitter para bloques de texto (las tablas no se fragmentan)
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=900,
-            chunk_overlap=150,
+            chunk_size=1000,
+            chunk_overlap=200,
             separators=[
                 "\n\n## ", "\n\n### ", "\n\n#### ",
-                "\n\n", "\n", ". ", " ", "",
+                "\n\n|", "\n\n", "\n", " ", "",
             ],
             is_separator_regex=False,
         )
-
-        processed_chunks = []
-
-        for block in blocks:
-            if block["type"] == "table":
-                # Tablas: mantener íntegras si son menores a 2000 chars
-                if len(block["content"]) <= 2000:
-                    chunk_text = block["content"]
-                    processed_chunks.append({
-                        "text":            chunk_text,
-                        "text_normalized": normalize_text(chunk_text),
-                        "section":         block["section"],
-                        "page":            _find_page_for_chunk(chunk_text, page_map),
-                        "type":            "table",
-                        "chunk_hash":      _hash_content(chunk_text),
-                    })
-                else:
-                    # Tablas muy largas: dividir por filas en grupos
-                    rows = block["content"].split("\n")
-                    header = rows[0] if rows else ""
-                    separator = rows[1] if len(rows) > 1 and "---" in rows[1] else ""
-                    data_rows = rows[2:] if separator else rows[1:]
-
-                    # Agrupar en bloques de ~15 filas
-                    for j in range(0, len(data_rows), 15):
-                        group = data_rows[j:j + 15]
-                        chunk_text = "\n".join([header, separator] + group).strip()
-                        if len(chunk_text) > 60:
-                            processed_chunks.append({
-                                "text":            chunk_text,
-                                "text_normalized": normalize_text(chunk_text),
-                                "section":         block["section"],
-                                "page":            _find_page_for_chunk(chunk_text, page_map),
-                                "type":            "table",
-                                "chunk_hash":      _hash_content(chunk_text),
-                            })
-            else:
-                # Texto: fragmentar con el splitter
-                sub_chunks = splitter.split_text(block["content"])
-                for sc in sub_chunks:
-                    sc = sc.strip()
-                    if len(sc) > 80:
-                        processed_chunks.append({
-                            "text":            sc,
-                            "text_normalized": normalize_text(sc),
-                            "section":         block["section"],
-                            "page":            _find_page_for_chunk(sc, page_map),
-                            "type":            "text",
-                            "chunk_hash":      _hash_content(sc),
-                        })
-
-        return processed_chunks, pdf_hash
-
+        chunks = splitter.split_text(all_text)
+        # Filtrar chunks muy cortos o fragmentos de tabla incompletos
+        valid = [
+            c.strip() for c in chunks
+            if len(c.strip()) > 80
+            and not c.strip().endswith("|")
+            and not c.strip().endswith("[TABLA")
+        ]
+        return valid, [filename] * len(valid)
     except Exception as e:
         st.error(f"❌ Error procesando PDF: {str(e)[:120]}")
-        return [], ""
+        return [], []
 
-
-def add_chunks_to_qdrant(
-    chunks: list[dict],
-    filename: str,
-    pdf_hash: str,
-    progress_bar=None,
-) -> dict:
-    """
-    Sube chunks a Qdrant con:
-    - M12.1: texto original preservado + normalizado separado
-    - M12.2: deduplicación por hash de chunk
-    - M12.5: metadata enriquecida
-    - M12.6: barra de progreso
-
-    Retorna estadísticas: {total, nuevos, duplicados, errores}
-    """
-    stats = {"total": len(chunks), "nuevos": 0, "duplicados": 0, "errores": 0}
-
-    if not chunks:
-        return stats
-
-    # M12.2: Obtener hashes existentes para deduplicar
-    existing_hashes = _get_existing_chunk_hashes()
-
-    # Filtrar duplicados antes de hacer embedding (ahorra cómputo)
-    new_chunks = []
-    for c in chunks:
-        if c["chunk_hash"] in existing_hashes:
-            stats["duplicados"] += 1
-        else:
-            new_chunks.append(c)
-
-    if not new_chunks:
-        return stats
-
+def add_chunks_to_qdrant(chunks: list[str], sources: list[str]) -> bool:
+    """Sube chunks a Qdrant con embeddings paralelos."""
     try:
-        # Generar embeddings solo del texto normalizado (para búsqueda)
-        texts_for_embedding = [c["text_normalized"] for c in new_chunks]
-        embeddings = embed_chunks_parallel(texts_for_embedding)
+        normalized = [normalize_text(c) for c in chunks]
+        embeddings = embed_chunks_parallel(normalized)  # M12: paralelo
 
-        # Construir puntos con metadata enriquecida
-        points = []
-        for i, chunk in enumerate(new_chunks):
-            points.append(
-                PointStruct(
-                    id=str(uuid.uuid4()),
-                    vector=embeddings[i].tolist(),
-                    payload={
-                        # M12.1: texto legible para respuestas
-                        "text":       chunk["text"],
-                        # M12.1: texto normalizado para BM25
-                        "text_norm":  chunk["text_normalized"],
-                        # M12.5: metadata enriquecida
-                        "source":     filename,
-                        "doc_hash":   pdf_hash,
-                        "chunk_hash": chunk["chunk_hash"],
-                        "chunk_id":   i,
-                        "section":    chunk.get("section", ""),
-                        "page":       chunk.get("page", 0),
-                        "chunk_type": chunk.get("type", "text"),
-                        "type":       "documento_subido",
-                        "timestamp":  time.time(),
-                        "user":       st.session_state.get("user", "unknown"),
-                    },
-                )
+        points = [
+            PointStruct(
+                id=str(uuid.uuid4()),
+                vector=embeddings[i].tolist(),
+                payload={
+                    "text":      normalized[i],
+                    "source":    sources[i],
+                    "chunk_id":  i,
+                    "type":      "documento_subido",
+                    "timestamp": time.time(),
+                },
             )
-
-        # M12.6: Subir en batches con progreso
-        batch_size = 50
-        for i in range(0, len(points), batch_size):
-            batch = points[i:i + batch_size]
-            qdrant.upsert(collection_name=COLLECTION_NAME, points=batch)
-            stats["nuevos"] += len(batch)
-            if progress_bar:
-                progress_bar.progress(
-                    min((i + batch_size) / len(points), 1.0),
-                    text=f"Indexando... {min(i + batch_size, len(points))}/{len(points)} chunks",
-                )
-
-        return stats
-
+            for i in range(len(normalized))
+        ]
+        qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
+        st.success(f"✅ {len(points)} chunks añadidos a Qdrant")
+        return True
     except Exception as e:
-        stats["errores"] = len(new_chunks) - stats["nuevos"]
         st.error(f"❌ Error subiendo a Qdrant: {str(e)[:120]}")
-        return stats
+        return False
         
 # ══════════════════════════════════════════════════════════════════════════════
 # SISTEMA RAG PRINCIPAL — INTEGRA TODAS LAS MEJORAS
@@ -1384,56 +1113,41 @@ with st.sidebar:
     )
     if uploaded_file:
         if st.button("🚀 Procesar e Indexar", type="primary"):
-            pdf_bytes = uploaded_file.read()
+            with st.spinner("Extrayendo texto del PDF..."):
+                pdf_bytes = uploaded_file.read()
+                chunks, sources = process_uploaded_document(pdf_bytes, uploaded_file.name)
 
-            # M12.3: Verificar si el PDF ya fue indexado
-            pdf_hash = _hash_pdf(pdf_bytes)
-            if _check_pdf_already_indexed(pdf_hash):
-                st.warning(
-                    f"⚠️ Este documento ya fue indexado previamente.\n"
-                    f"Hash: `{pdf_hash[:12]}...`"
-                )
-            else:
-                with st.spinner("Extrayendo y fragmentando contenido..."):
-                    chunks, doc_hash = process_uploaded_document(
-                        pdf_bytes, uploaded_file.name
-                    )
+            if chunks:
+                st.success(f"✅ {len(chunks)} chunks extraídos de '{uploaded_file.name}'")
 
-                if chunks:
-                    st.success(
-                        f"✅ {len(chunks)} chunks extraídos "
-                        f"({sum(1 for c in chunks if c['type'] == 'table')} tablas, "
-                        f"{sum(1 for c in chunks if c['type'] == 'text')} texto)"
-                    )
+                # Mostrar preview de lo extraído
+                with st.expander("👁️ Preview de los primeros 3 chunks", expanded=False):
+                    for i, c in enumerate(chunks[:3]):
+                        st.caption(f"Chunk {i+1} ({len(c)} chars)")
+                        st.code(c[:250] + ("..." if len(c) > 250 else ""), language=None)
 
-                    # M12.6: Barra de progreso durante indexación
-                    progress = st.progress(0, text="Preparando indexación...")
-                    stats = add_chunks_to_qdrant(
-                        chunks=chunks,
-                        filename=uploaded_file.name,
-                        pdf_hash=doc_hash,
-                        progress_bar=progress,
-                    )
-                    progress.progress(1.0, text="Indexación completa")
-
-                    # M12.7: Mostrar estadísticas
-                    col_n, col_d, col_e = st.columns(3)
-                    col_n.metric("Nuevos", stats["nuevos"])
-                    col_d.metric("Duplicados", stats["duplicados"])
-                    col_e.metric("Errores", stats["errores"])
-
-                    if stats["nuevos"] > 0:
+                with st.spinner("Generando embeddings y subiendo a Qdrant..."):
+                    if add_chunks_to_qdrant(chunks, sources):
                         # Invalidar caché BM25 para reflejar nuevo contenido
                         build_bm25_index.clear()
                         st.balloons()
 
-                    if stats["duplicados"] > 0:
-                        st.info(
-                            f"ℹ️ {stats['duplicados']} chunks ya existían "
-                            f"y no se duplicaron."
-                        )
-                else:
-                    st.warning("⚠️ No se extrajeron chunks válidos")
+                        # Verificación post-indexación
+                        try:
+                            col_info = qdrant.get_collection(COLLECTION_NAME)
+                            st.info(
+                                f"📊 Total de chunks en Qdrant: "
+                                f"{col_info.points_count}"
+                            )
+                        except Exception:
+                            pass
+            else:
+                st.warning("⚠️ No se extrajeron chunks válidos del PDF.")
+                st.caption(
+                    "Posibles causas: el PDF es escaneado (imagen), "
+                    "está protegido, o no contiene texto extraíble. "
+                    "Verifica que puedas seleccionar texto en el PDF."
+                )
 
     st.markdown("---")
 
@@ -1473,6 +1187,127 @@ with st.sidebar:
         st.session_state.messages = []
         st.session_state.last_scores = {}
         st.rerun()
+
+    # ══════════════════════════════════════════════════════════════════════
+    # PANEL DE DIAGNÓSTICO — Verificar qué hay en Qdrant
+    # ══════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    with st.expander("🔧 Diagnóstico del índice", expanded=False):
+        # --- Estadísticas generales de la colección ---
+        try:
+            col_info = qdrant.get_collection(COLLECTION_NAME)
+            total_points = col_info.points_count
+            st.metric("Total de chunks indexados", total_points)
+
+            if total_points == 0:
+                st.error(
+                    "❌ La colección está vacía. Ningún documento ha sido "
+                    "indexado. Sube un PDF y presiona 'Procesar e Indexar'."
+                )
+            else:
+                # --- Listar fuentes (documentos) indexados ---
+                st.markdown("**Documentos indexados:**")
+                sources_found = set()
+                offset_diag = None
+                try:
+                    while True:
+                        res = qdrant.scroll(
+                            collection_name=COLLECTION_NAME,
+                            limit=200,
+                            offset=offset_diag,
+                            with_payload=["source"],
+                            with_vectors=False,
+                        )
+                        for pt in res[0]:
+                            src = pt.payload.get("source", "desconocido")
+                            sources_found.add(src)
+                        offset_diag = res[1]
+                        if offset_diag is None:
+                            break
+                except Exception:
+                    pass
+
+                if sources_found:
+                    for src in sorted(sources_found):
+                        st.caption(f"📄 {src}")
+                else:
+                    st.caption("Sin fuentes identificadas")
+
+                # --- Búsqueda de prueba manual ---
+                st.markdown("**Probar búsqueda:**")
+                test_query = st.text_input(
+                    "Escribe una consulta de prueba",
+                    key="diag_query",
+                    placeholder="ej: competencias del programa",
+                )
+                if test_query and st.button("🔍 Buscar", key="diag_search"):
+                    with st.spinner("Buscando..."):
+                        try:
+                            emb = embedder.encode(
+                                [test_query], normalize_embeddings=True
+                            )[0]
+                            hits = qdrant.query_points(
+                                collection_name=COLLECTION_NAME,
+                                query=emb.tolist(),
+                                limit=3,
+                                with_payload=True,
+                            ).points
+
+                            if not hits:
+                                st.warning("No se encontraron resultados.")
+                            else:
+                                for j, hit in enumerate(hits):
+                                    score = round(hit.score, 4)
+                                    text = hit.payload.get("text", "")[:300]
+                                    source = hit.payload.get("source", "?")
+                                    st.markdown(
+                                        f"**#{j+1}** (score: {score}) — "
+                                        f"_{source}_"
+                                    )
+                                    st.caption(text)
+                                    st.markdown("---")
+
+                                # Diagnóstico del score
+                                best = hits[0].score
+                                if best < 0.3:
+                                    st.error(
+                                        f"⚠️ Score máximo muy bajo ({best:.2f}). "
+                                        "El documento probablemente no contiene "
+                                        "contenido relevante para esta consulta, "
+                                        "o el texto no se extrajo correctamente."
+                                    )
+                                elif best < 0.5:
+                                    st.warning(
+                                        f"Score moderado ({best:.2f}). "
+                                        "Hay contenido parcialmente relevante."
+                                    )
+                                else:
+                                    st.success(
+                                        f"Score bueno ({best:.2f}). "
+                                        "El contenido se recupera correctamente."
+                                    )
+                        except Exception as e:
+                            st.error(f"Error en búsqueda: {str(e)[:100]}")
+
+                # --- Ver muestra de chunks ---
+                if st.checkbox("Ver muestra de chunks almacenados", key="diag_sample"):
+                    try:
+                        sample = qdrant.scroll(
+                            collection_name=COLLECTION_NAME,
+                            limit=5,
+                            with_payload=True,
+                            with_vectors=False,
+                        )
+                        for pt in sample[0]:
+                            text = pt.payload.get("text", "")[:200]
+                            src = pt.payload.get("source", "?")
+                            st.caption(f"📄 {src}")
+                            st.code(text, language=None)
+                    except Exception as e:
+                        st.error(f"Error: {str(e)[:100]}")
+
+        except Exception as e:
+            st.error(f"Error conectando a Qdrant: {str(e)[:100]}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # M8 · MANEJO DE INPUT CON STREAMING REAL
