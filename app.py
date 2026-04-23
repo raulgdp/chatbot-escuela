@@ -224,9 +224,10 @@ st.markdown("""
 # CONEXIÓN APIs
 # ══════════════════════════════════════════════════════════════════════════════
 OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "").strip()
-OPENAI_API_BASE = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL   = "anthropic/claude-opus-4.6-fast"
-FAST_MODEL      = "openai/gpt-4o-mini"  # Para clasificación rápida
+#OPENAI_API_BASE = "https://openrouter.ai/api/v1"
+OPENAI_API_BASE=https://api.groq.com/openai/v1
+DEFAULT_MODEL   = "llama-3.3-70b-versatile"
+FAST_MODEL      = "llama-3.3-70b-versatile"  # Para clasificación rápida
 
 try:
     client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_API_BASE)
