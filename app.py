@@ -225,7 +225,7 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════════════════════
 OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "").strip()
 #OPENAI_API_BASE = "https://openrouter.ai/api/v1"
-OPENAI_API_BASE=https://api.groq.com/openai/v1
+OPENAI_API_BASE="https://api.groq.com/openai/v1"
 DEFAULT_MODEL   = "llama-3.3-70b-versatile"
 FAST_MODEL      = "llama-3.3-70b-versatile"  # Para clasificación rápida
 
