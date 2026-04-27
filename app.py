@@ -986,7 +986,7 @@ class RAGSystemV3:
         show_status("status-reranking", "📊 Rerankeando resultados...")
         reranked = rerank_results(query, raw_results)
 
-        context = "\n\n---\n\n".join(r["text"] for r in reranked)[:4500]
+        context = "\n\n---\n\n".join(r["text"] for r in reranked)[:7000]
         sources = list({r["source"] for r in reranked if r["source"] != "desconocido"})
         results["sources"] = sources
 
@@ -1453,6 +1453,14 @@ if prompt:
     st.session_state.messages.append({"role": "assistant", "content": display_answer})
     st.session_state.metrics = rag_result["metrics"]
 
+    # Forzar scroll antes del rerun
+    st.markdown('<div id="pre-rerun-anchor"></div>', unsafe_allow_html=True)
+    st.markdown("""<script>
+        window.parent.scrollTo(0, window.parent.document.body.scrollHeight);
+        var m = window.parent.document.querySelector('section.main');
+        if(m) m.scrollTop = m.scrollHeight;
+    </script>""", unsafe_allow_html=True)
+
     st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1466,50 +1474,70 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SCROLL AUTOMÁTICO — Mejorado con MutationObserver + múltiples fallbacks
+# SCROLL AUTOMÁTICO — CSS anchor + JavaScript post-rerun
 # ══════════════════════════════════════════════════════════════════════════════
-st.markdown("""
+
+# Método 1: CSS que fuerza el scroll al fondo con un div ancla
+# Este se inyecta como componente HTML que Streamlit renderiza al final
+scroll_js = """
+<style>
+    /* Forzar que el contenedor principal haga scroll al ancla */
+    #scroll-anchor {
+        height: 1px;
+        margin: 0;
+        padding: 0;
+    }
+</style>
+
+<div id="scroll-anchor"></div>
+
 <script>
-function scrollToBottom() {
-    // Estrategia 1: Scroll del contenedor principal de Streamlit
-    const mainSection = window.parent.document.querySelector('section.main');
-    if (mainSection) {
-        mainSection.scrollTop = mainSection.scrollHeight;
+// Función principal de scroll
+function forceScrollBottom() {
+    // Método A: Anchor element
+    var anchor = document.getElementById('scroll-anchor');
+    if (anchor) {
+        anchor.scrollIntoView({ behavior: 'instant', block: 'end' });
     }
 
-    // Estrategia 2: Scroll del último mensaje del chat
-    const msgs = window.parent.document.querySelectorAll('[data-testid="stChatMessage"]');
+    // Método B: Todos los contenedores de Streamlit
+    var selectors = [
+        'section.main',
+        '[data-testid="stAppViewContainer"]',
+        '[data-testid="stChatMessageContainer"]',
+        '.main .block-container'
+    ];
+    selectors.forEach(function(sel) {
+        var el = window.parent.document.querySelector(sel);
+        if (el) { el.scrollTop = el.scrollHeight + 9999; }
+    });
+
+    // Método C: Último mensaje
+    var msgs = window.parent.document.querySelectorAll('[data-testid="stChatMessage"]');
     if (msgs.length > 0) {
-        msgs[msgs.length - 1].scrollIntoView({ behavior: 'smooth', block: 'end' });
+        msgs[msgs.length - 1].scrollIntoView({ behavior: 'instant', block: 'end' });
     }
 
-    // Estrategia 3: Scroll del contenedor de chat
-    const chatContainer = window.parent.document.querySelector('[data-testid="stChatMessageContainer"]');
-    if (chatContainer) {
-        chatContainer.scrollTop = chatContainer.scrollHeight;
-    }
-
-    // Estrategia 4: Scroll de cualquier contenedor con overflow
-    const containers = window.parent.document.querySelectorAll('.main .block-container, [data-testid="stVerticalBlock"]');
-    containers.forEach(c => { c.scrollTop = c.scrollHeight; });
+    // Método D: Window scroll
+    window.parent.scrollTo(0, window.parent.document.body.scrollHeight);
 }
 
-// Ejecutar inmediatamente y con delays progresivos
-scrollToBottom();
-[100, 300, 600, 1000, 1500, 2000, 3000, 5000].forEach(d => setTimeout(scrollToBottom, d));
+// Ejecutar agresivamente: inmediato + múltiples delays
+forceScrollBottom();
+var delays = [50, 100, 200, 400, 700, 1000, 1500, 2000, 3000, 4000, 6000, 8000];
+delays.forEach(function(d) { setTimeout(forceScrollBottom, d); });
 
-// MutationObserver: detecta cuando se agrega contenido nuevo al DOM
+// Observador: scroll cada vez que cambia el DOM (streaming, nuevos mensajes)
 try {
-    const targetNode = window.parent.document.querySelector('section.main') ||
-                       window.parent.document.querySelector('[data-testid="stAppViewContainer"]');
-    if (targetNode) {
-        const observer = new MutationObserver(function(mutations) {
-            setTimeout(scrollToBottom, 100);
-        });
-        observer.observe(targetNode, { childList: true, subtree: true });
-        // Auto-desconectar después de 30 segundos para no desperdiciar recursos
-        setTimeout(() => observer.disconnect(), 30000);
-    }
+    var target = window.parent.document.querySelector('section.main') ||
+                 window.parent.document.body;
+    var obs = new MutationObserver(function() {
+        setTimeout(forceScrollBottom, 50);
+        setTimeout(forceScrollBottom, 200);
+    });
+    obs.observe(target, { childList: true, subtree: true, characterData: true });
+    setTimeout(function() { obs.disconnect(); }, 60000);
 } catch(e) {}
 </script>
-""", unsafe_allow_html=True)
+"""
+st.markdown(scroll_js, unsafe_allow_html=True)
