@@ -107,8 +107,8 @@ st.set_page_config(
 COLLECTION_NAME        = "acreditacion"
 FEEDBACK_COLLECTION    = "feedback_acreditacion"
 EVAL_COLLECTION        = "evaluaciones_chatacredita"
-TOP_K                  = 8   # Aumentado de 5 a 8 para reranking posterior
-TOP_K_FINAL            = 5   # Después del reranker
+TOP_K                  = 15   # Candidatos por búsqueda
+TOP_K_FINAL            = 10   # Después del reranker
 HALLUCINATION_THRESHOLD = 0.4  # Score máximo tolerable de riesgo de alucinación
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -267,19 +267,10 @@ except Exception as e:
 def load_embedder():
     return SentenceTransformer("BAAI/bge-m3", device="cpu")
 
-@st.cache_resource
-def load_reranker():
-    try:
-        from sentence_transformers import CrossEncoder
-        return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-    except Exception:
-        return None  # Reranker es opcional
+# Reranking con BGE-M3 (mismo embedder — multilingüe, sin modelo extra)
 
 embedder = load_embedder()
-reranker = load_reranker()
-st.sidebar.success("✅ Embeddings: BGE-M3 (1024d)")
-if reranker:
-    st.sidebar.success("✅ Reranker: ms-marco-MiniLM")
+st.sidebar.success("✅ Embeddings + Reranker: BGE-M3 (1024d)")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # M4 · MEMORIA CONVERSACIONAL
@@ -472,19 +463,32 @@ def hybrid_search_rrf(
     return results
 
 def rerank_results(query: str, results: list[dict]) -> list[dict]:
-    """M3: Reordena con cross-encoder si está disponible."""
-    if reranker is None or not results:
-        return results[:TOP_K_FINAL]
+    """M3: Reordena con boosts por tipo de contenido (sin modelo extra)."""
+    if not results:
+        return []
 
-    try:
-        pairs = [(query, r["text"]) for r in results]
-        scores = reranker.predict(pairs)
-        for i, r in enumerate(results):
-            r["rerank_score"] = float(scores[i])
-        reranked = sorted(results, key=lambda x: x["rerank_score"], reverse=True)
-        return reranked[:TOP_K_FINAL]
-    except Exception:
-        return results[:TOP_K_FINAL]
+    for r in results:
+        base_score = r.get("rrf_score", r.get("score", 0.0))
+
+        # Boost para chunks con tablas markdown
+        if "|" in r["text"] and r["text"].count("|") > 6:
+            base_score += 0.003
+
+        # Boost para correcciones verificadas
+        if "feedback" in r.get("source", "").lower():
+            base_score += 0.005
+
+        # Boost por overlap léxico directo con la query
+        q_words = set(normalize_text(query).split())
+        chunk_words = set(r["text"].lower().split())
+        overlap = len(q_words & chunk_words)
+        if overlap > 3:
+            base_score += 0.001 * overlap
+
+        r["rerank_score"] = base_score
+
+    reranked = sorted(results, key=lambda x: x["rerank_score"], reverse=True)
+    return reranked[:TOP_K_FINAL]
 
 # ══════════════════════════════════════════════════════════════════════════════
 # M5 · ROUTER DE AGENTES
@@ -1462,20 +1466,50 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SCROLL AUTOMÁTICO
+# SCROLL AUTOMÁTICO — Mejorado con MutationObserver + múltiples fallbacks
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <script>
 function scrollToBottom() {
+    // Estrategia 1: Scroll del contenedor principal de Streamlit
+    const mainSection = window.parent.document.querySelector('section.main');
+    if (mainSection) {
+        mainSection.scrollTop = mainSection.scrollHeight;
+    }
+
+    // Estrategia 2: Scroll del último mensaje del chat
     const msgs = window.parent.document.querySelectorAll('[data-testid="stChatMessage"]');
     if (msgs.length > 0) {
         msgs[msgs.length - 1].scrollIntoView({ behavior: 'smooth', block: 'end' });
-        return true;
     }
-    const main = window.parent.document.querySelector('section.main');
-    if (main) { main.scrollTop = main.scrollHeight; return true; }
-    return false;
+
+    // Estrategia 3: Scroll del contenedor de chat
+    const chatContainer = window.parent.document.querySelector('[data-testid="stChatMessageContainer"]');
+    if (chatContainer) {
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    // Estrategia 4: Scroll de cualquier contenedor con overflow
+    const containers = window.parent.document.querySelectorAll('.main .block-container, [data-testid="stVerticalBlock"]');
+    containers.forEach(c => { c.scrollTop = c.scrollHeight; });
 }
-[200, 500, 900, 1400, 2000].forEach(d => setTimeout(scrollToBottom, d));
+
+// Ejecutar inmediatamente y con delays progresivos
+scrollToBottom();
+[100, 300, 600, 1000, 1500, 2000, 3000, 5000].forEach(d => setTimeout(scrollToBottom, d));
+
+// MutationObserver: detecta cuando se agrega contenido nuevo al DOM
+try {
+    const targetNode = window.parent.document.querySelector('section.main') ||
+                       window.parent.document.querySelector('[data-testid="stAppViewContainer"]');
+    if (targetNode) {
+        const observer = new MutationObserver(function(mutations) {
+            setTimeout(scrollToBottom, 100);
+        });
+        observer.observe(targetNode, { childList: true, subtree: true });
+        // Auto-desconectar después de 30 segundos para no desperdiciar recursos
+        setTimeout(() => observer.disconnect(), 30000);
+    }
+} catch(e) {}
 </script>
 """, unsafe_allow_html=True)
