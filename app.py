@@ -610,10 +610,13 @@ class AnswerAgentV2:
 
 REGLAS ABSOLUTAS:
 1. Responde SOLO con información presente en el CONTEXTO RECUPERADO.
-2. Si la información no está en el contexto, di exactamente: "No encontré información sobre esto en los documentos disponibles."
+2. Si la información no está en el contexto, di exactamente: "No encontré información sobre esto en los documentos disponibles." SIN citar fuentes.
 3. Cuando uses un dato específico del contexto, añade [Fuente: {source_list}] al final de la oración.
 4. NUNCA inventes datos, fechas, nombres o normativas.
 5. NUNCA menciones que tienes un "contexto" — habla como si conocieras los documentos.
+6. IMPORTANTE: Los documentos pueden ser de años anteriores (2020, 2023, 2024). Si te preguntan por cargos o datos "actuales", aclara la fecha del documento fuente. Ejemplo: "Según el documento de 2020, el director era X. Esta información puede haber cambiado."
+7. Si hay resultados marcados como "⚡ CORRECCIÓN VERIFICADA", tienen PRIORIDAD sobre otros documentos.
+8. Máximo 3-4 párrafos. Sé conciso.
 
 INSTRUCCIÓN DE FORMATO: {format_instr}"""
 
@@ -637,10 +640,20 @@ PREGUNTA DEL USUARIO:
                 max_tokens=1000,
                 stream=True,
             )
+            token_count = 0
+            last_token_time = time.time()
             for chunk in stream:
+                # Timeout: 30s sin tokens = cortar
+                if time.time() - last_token_time > 30:
+                    break
                 delta = chunk.choices[0].delta.content
                 if delta:
+                    token_count += 1
+                    last_token_time = time.time()
                     yield delta
+                    # Safety: máx 800 tokens
+                    if token_count > 800:
+                        break
         except Exception as e:
             yield f"⚠️ Error al generar respuesta: {str(e)[:120]}"
 
