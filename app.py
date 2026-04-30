@@ -247,9 +247,9 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════════════════════
 # Configuración para servidor local (llama.cpp / LM Studio / vLLM)
 OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "sk-no-key-required").strip()
-OPENAI_API_BASE = "http://localhost:8080/v1"
-DEFAULT_MODEL   = "gpt-acredita-350m"
-FAST_MODEL      = "gpt-acredita-350m"   # ⬅️ ESTABA FALTANDO
+OPENAI_API_BASE = "https://api-inference.huggingface.co/v1"
+DEFAULT_MODEL = "raulgdp/gpt-acredita-350m"
+FAST_MODEL = "raulgdp/gpt-acredita-350m"
 
 try:
     client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_API_BASE)
