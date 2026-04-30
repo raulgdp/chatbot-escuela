@@ -246,7 +246,7 @@ st.markdown("""
 # CONEXIÓN APIs
 # ══════════════════════════════════════════════════════════════════════════════
 OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "sk-no-key-required").strip()
-OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "http://localhost:8080/v1")
+OPENAI_API_BASE = "http://localhost:8080/v1"
 DEFAULT_MODEL   = "gpt-acredita-350m"
 FAST_MODEL      = "gpt-acredita-350m"
 
@@ -254,6 +254,9 @@ FAST_MODEL      = "gpt-acredita-350m"
 # INICIALIZAR CLIENTE CON MANEJO DE ERRORES
 # ═══════════════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════════════
+# Limpiar variables que podrian sobrescribir la URL local
+os.environ.pop("OPENAI_BASE_URL", None)
+os.environ.pop("OPENAI_API_BASE", None)
 try:
     client = OpenAI(
         api_key=OPENAI_API_KEY if OPENAI_API_KEY else "sk-no-key-required",
