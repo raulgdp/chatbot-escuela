@@ -246,7 +246,7 @@ st.markdown("""
 # CONEXIÓN APIs
 # ══════════════════════════════════════════════════════════════════════════════
 OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "sk-no-key-required").strip()
-OPENAI_API_BASE = "http://192.168.1.8:8080/v1"
+OPENAI_API_BASE = "http://localhost:8080/v1 "
 DEFAULT_MODEL   = "gpt-acredita-350m"
 FAST_MODEL      = "gpt-acredita-350m"
 
