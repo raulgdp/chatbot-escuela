@@ -246,10 +246,10 @@ st.markdown("""
 # CONEXIÓN APIs
 # ══════════════════════════════════════════════════════════════════════════════
 # Configuración para servidor local (llama.cpp / LM Studio / vLLM)
-OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "sk-no-key-required").strip()
-OPENAI_API_BASE = "https://api-inference.huggingface.co/v1"
-DEFAULT_MODEL = "raulgdp/gpt-acredita-350m"
-FAST_MODEL = "raulgdp/gpt-acredita-350m"
+OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "ollama").strip()
+OPENAI_API_BASE = "http://localhost:11434/v1"
+DEFAULT_MODEL = "gpt-acredita-350m"
+FAST_MODEL = "gpt-acredita-350m"
 
  #═══════════════════════════════════════════════════════════════════════════
 # INICIALIZAR CLIENTE CON MANEJO DE ERRORES
@@ -266,11 +266,11 @@ try:
     # No detenemos la app si falla, solo mostramos advertencia
     try:
         _ = client.models.list()
-        st.sidebar.success(f"✅ Hugging Face: {DEFAULT_MODEL}")
+        st.sidebar.success(f"✅ Ollama local: {DEFAULT_MODEL}")
         st.sidebar.info("🔗 api-inference.huggingface.co")
     except Exception:
         # Es normal que HF no responda a /models, no es error crítico
-        st.sidebar.success(f"✅ Hugging Face: {DEFAULT_MODEL}")
+        st.sidebar.success(f"✅ Ollama local: {DEFAULT_MODEL}")
         st.sidebar.info("🔗 API configurada (modelo en carga si es primera vez)")
         
 except Exception as e:
