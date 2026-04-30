@@ -88,21 +88,8 @@ def login():
         else:
             st.sidebar.error("❌ Credenciales incorrectas")
 
-# ── Inicialización completa del session_state ──────────────────────────────
-# Todas las variables que la app usa deben existir desde el primer render
-_DEFAULTS = {
-    "auth": False,
-    "user": "",
-    "messages": [],
-    "metrics": {},
-    "visits": 0,
-    "last_scores": {},
-    "counted": False,
-}
-for _key, _default in _DEFAULTS.items():
-    if _key not in st.session_state:
-        st.session_state[_key] = _default
-
+if "auth" not in st.session_state:
+    st.session_state.auth = False
 if not st.session_state.auth:
     login()
     st.stop()
@@ -236,55 +223,20 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════════════════════
 # CONEXIÓN APIs
 # ══════════════════════════════════════════════════════════════════════════════
-#OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "").strip()
+OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "").strip()
 #OPENAI_API_BASE = "https://openrouter.ai/api/v1"
-#OPENAI_API_BASE="https://api.groq.com/openai/v1"
-#DEFAULT_MODEL   = "llama-3.3-70b-versatile"
-#FAST_MODEL      = "llama-3.3-70b-versatile"  # Para clasificación rápida
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CONEXIÓN APIs
-# ══════════════════════════════════════════════════════════════════════════════
-OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "sk-no-key-required").strip()
-OPENAI_API_BASE = "http://localhost:8080/v1 "
-DEFAULT_MODEL   = "gpt-acredita-350m"
-FAST_MODEL      = "gpt-acredita-350m"
-
- #═══════════════════════════════════════════════════════════════════════════
-# INICIALIZAR CLIENTE CON MANEJO DE ERRORES
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
-# Modo GPT-2: ajusta truncado de contexto, timeouts y prompts
-# GPT-2 solo soporta 1024 tokens y no entiende chat templates complejos
-GPT2_MODE = "gpt-acredita" in DEFAULT_MODEL.lower() or "gpt2" in DEFAULT_MODEL.lower()
-GPT2_MAX_CONTEXT_CHARS = 1500   # Para que el prompt completo quepa en ~900 tokens
-GPT2_MAX_TOKENS_OUT = 200       # GPT-2 no genera respuestas largas coherentes
-
-# Limpiar variables de entorno que sobrescriben la URL local
-os.environ.pop("OPENAI_BASE_URL", None)
-os.environ.pop("OPENAI_API_BASE", None)
+OPENAI_API_BASE="https://api.groq.com/openai/v1"
+DEFAULT_MODEL   = "llama-3.3-70b-versatile"
+FAST_MODEL      = "llama-3.3-70b-versatile"  # Para clasificación rápida
 
 try:
-    client = OpenAI(
-        api_key=OPENAI_API_KEY if OPENAI_API_KEY else "sk-no-key-required",
-        base_url=OPENAI_API_BASE,
-        timeout=180,   # GPT-2 puede ser lento; subido de 60 a 180
-        max_retries=1,
-    )
-    try:
-        _ = client.models.list()
-        st.sidebar.success(f"✅ Modelo local: {DEFAULT_MODEL}")
-        st.sidebar.info(f"🔗 {OPENAI_API_BASE}")
-        if GPT2_MODE:
-            st.sidebar.warning("⚙️ Modo GPT-2 activo: contexto y respuestas truncados")
-    except Exception:
-        st.sidebar.success(f"✅ Modelo local: {DEFAULT_MODEL}")
-        st.sidebar.info(f"🔗 {OPENAI_API_BASE}")
-
+    client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_API_BASE)
+    _ = client.models.list()
+    st.sidebar.success(f"✅ OpenRouter: {DEFAULT_MODEL}")
 except Exception as e:
-    st.sidebar.error(f"❌ Error conexión: {str(e)[:60]}")
-    st.sidebar.warning(f"⚠️ Verifica que el modelo esté corriendo en {OPENAI_API_BASE}")
-    st.stop()
+    st.sidebar.error(f"❌ OpenRouter: {str(e)[:80]}")
+    st.sidebar.info("Verifica OPENAI_API_KEY en Secrets")
+
 try:
     qdrant = QdrantClient(
         url=get_secret("QDRANT_URL", "").strip(),
@@ -343,10 +295,6 @@ class ConversationMemory:
         return f"[Resumen diálogo anterior]: {summary}\n\n" + self._format(recent)
 
     def _summarize(self, messages: list) -> str:
-        # En modo GPT-2: no resumir con el LLM (no entiende la tarea)
-        if GPT2_MODE:
-            return "[historial previo disponible]"
-
         dialog = self._format(messages)
         try:
             r = client.chat.completions.create(
@@ -380,10 +328,6 @@ def rewrite_query(query: str, memory_ctx: str) -> dict:
     Genera variantes semánticas de la query para mejorar el recall.
     Retorna: rewritten, hyde (doc hipotético), keywords, lang.
     """
-    # En modo GPT-2: no usar el LLM para reescribir (no entiende JSON ni instrucciones)
-    if GPT2_MODE:
-        return {"rewritten": query, "hyde": "", "keywords": query.split()[:6], "lang": "es"}
-
     prompt = f"""Eres un experto en acreditación universitaria colombiana (CNA).
 
 Contexto conversacional reciente:
@@ -614,15 +558,6 @@ Responde solo con la clave (estadistica/normativa/proceso/comparacion/sintesis/g
 
 def classify_intent(prompt: str, last_answer: str) -> str:
     """Distingue pregunta nueva vs retroalimentación/corrección."""
-    # En modo GPT-2: heurística simple (no usar el LLM)
-    if GPT2_MODE:
-        feedback_keywords = ["no,", "está mal", "incorrecto", "equivocado", "corrige",
-                             "en realidad", "te equivocas", "la correcta es"]
-        plow = prompt.lower()
-        if last_answer and any(kw in plow for kw in feedback_keywords):
-            return "retroalimentacion"
-        return "pregunta"
-
     prompt_llm = f"""Contexto — respuesta previa del sistema:
 {last_answer[:400]}
 
@@ -671,55 +606,14 @@ class AnswerAgentV2:
         format_instr = AGENT_PROMPTS.get(agent_type, AGENT_PROMPTS["general"])
         source_list  = ", ".join(set(sources)) if sources else "documentos de acreditación"
 
-        # ── Modo GPT-2: prompt simple, contexto truncado, sin streaming ──────
-        if GPT2_MODE:
-            # GPT-2 solo soporta 1024 tokens TOTAL. Truncamos el contexto agresivamente.
-            short_context = context[:GPT2_MAX_CONTEXT_CHARS]
-            # Prompt estilo "completar texto" que es lo que GPT-2 entiende
-            prompt = (
-                f"A continuación se presenta información sobre acreditación de la EISC, "
-                f"Universidad del Valle, seguida de una pregunta y su respuesta.\n\n"
-                f"INFORMACIÓN:\n{short_context}\n\n"
-                f"PREGUNTA: {query}\n\n"
-                f"RESPUESTA:"
-            )
-            try:
-                # Sin streaming en GPT-2: muchas implementaciones tienen problemas.
-                # Hacemos una sola llamada y devolvemos el texto completo.
-                r = client.chat.completions.create(
-                    model=DEFAULT_MODEL,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3,
-                    max_tokens=GPT2_MAX_TOKENS_OUT,
-                    stream=False,
-                )
-                answer = r.choices[0].message.content or ""
-                # Limpieza básica: cortar si empieza a alucinar wikipedia
-                for stop_pattern in ["PREGUNTA:", "INFORMACIÓN:", "(discusión)", "(UTC)", "wikipedia"]:
-                    idx = answer.lower().find(stop_pattern.lower())
-                    if idx > 20:
-                        answer = answer[:idx].strip()
-                if not answer.strip():
-                    answer = "No encontré información clara sobre esto en los documentos disponibles."
-                # Devolver palabra por palabra para simular streaming visual
-                for word in answer.split(" "):
-                    yield word + " "
-            except Exception as e:
-                yield f"⚠️ Error al generar respuesta: {str(e)[:200]}"
-            return
-
-        # ── Modo modelo grande (Qwen, Llama, GPT-4, etc.): prompt completo + streaming ──
         system_msg = f"""Eres ChatAcredita, asistente especializado en acreditación de la EISC, Universidad del Valle, Colombia.
 
 REGLAS ABSOLUTAS:
 1. Responde SOLO con información presente en el CONTEXTO RECUPERADO.
-2. Si la información no está en el contexto, di exactamente: "No encontré información sobre esto en los documentos disponibles." SIN citar fuentes.
+2. Si la información no está en el contexto, di exactamente: "No encontré información sobre esto en los documentos disponibles."
 3. Cuando uses un dato específico del contexto, añade [Fuente: {source_list}] al final de la oración.
 4. NUNCA inventes datos, fechas, nombres o normativas.
 5. NUNCA menciones que tienes un "contexto" — habla como si conocieras los documentos.
-6. IMPORTANTE: Los documentos pueden ser de años anteriores (2020, 2023, 2024). Si te preguntan por cargos o datos "actuales", aclara la fecha del documento fuente. Ejemplo: "Según el documento de 2020, el director era X. Esta información puede haber cambiado."
-7. Si hay resultados marcados como "⚡ CORRECCIÓN VERIFICADA", tienen PRIORIDAD sobre otros documentos.
-8. Máximo 3-4 párrafos. Sé conciso.
 
 INSTRUCCIÓN DE FORMATO: {format_instr}"""
 
@@ -743,31 +637,17 @@ PREGUNTA DEL USUARIO:
                 max_tokens=1000,
                 stream=True,
             )
-            token_count = 0
-            last_token_time = time.time()
             for chunk in stream:
-                # Timeout: 30s sin tokens = cortar
-                if time.time() - last_token_time > 30:
-                    break
                 delta = chunk.choices[0].delta.content
                 if delta:
-                    token_count += 1
-                    last_token_time = time.time()
                     yield delta
-                    # Safety: máx 800 tokens
-                    if token_count > 800:
-                        break
         except Exception as e:
-            yield f"⚠️ Error al generar respuesta: {str(e)[:200]}"
+            yield f"⚠️ Error al generar respuesta: {str(e)[:120]}"
 
     def generate_correction(
         self, query: str, last_answer: str, context: str
     ) -> str:
         """Genera respuesta corregida basada en retroalimentación del usuario."""
-        # En modo GPT-2: corrección simple, devolver la corrección del usuario
-        if GPT2_MODE:
-            return f"Gracias por la corrección. Información actualizada: {query}"
-
         prompt = f"""El usuario señaló un problema con esta respuesta previa:
 
 RESPUESTA PREVIA:
@@ -804,23 +684,6 @@ def evaluate_response(query: str, context: str, answer: str) -> dict:
     Evalúa faithfulness, relevance y riesgo de alucinación.
     Persiste resultados en Qdrant para análisis posterior.
     """
-    default_scores = {
-        "faithfulness":      0.8,
-        "answer_relevance":  0.8,
-        "context_precision": 0.7,
-        "hallucination_risk": 0.2,
-    }
-
-    # En modo GPT-2: no usar el LLM para evaluar (no entiende JSON ni la tarea)
-    # Devolvemos scores neutros para que la UI no rompa
-    if GPT2_MODE:
-        return {
-            "faithfulness":      0.6,
-            "answer_relevance":  0.6,
-            "context_precision": 0.6,
-            "hallucination_risk": 0.4,
-        }
-
     eval_prompt = f"""Evalúa esta respuesta de un sistema RAG sobre acreditación universitaria.
 
 PREGUNTA: {query}
@@ -841,7 +704,7 @@ Definiciones:
 - context_precision: qué tan relevante era el contexto para la pregunta (1.0=perfecto, 0.0=irrelevante)
 - hallucination_risk: probabilidad de que la respuesta contenga info inventada (0.0=ninguna, 1.0=alta)"""
 
-    default_scores_extra = {
+    default_scores = {
         "faithfulness":      0.8,
         "answer_relevance":  0.8,
         "context_precision": 0.7,
@@ -857,15 +720,15 @@ Definiciones:
         )
         scores = clean_json(r.choices[0].message.content)
         # Validar que todos los campos existen y son floats
-        for k in default_scores_extra:
+        for k in default_scores:
             if k not in scores or not isinstance(scores[k], (int, float)):
-                scores[k] = default_scores_extra[k]
+                scores[k] = default_scores[k]
 
         # M10: Persistir evaluación en Qdrant para análisis posterior
         _log_evaluation_async(query, scores)
         return scores
     except Exception:
-        return default_scores_extra
+        return default_scores
 
 def _log_evaluation_async(query: str, scores: dict):
     """Guarda métricas de evaluación en Qdrant (no bloquea la UI)."""
@@ -1123,9 +986,7 @@ class RAGSystemV3:
         show_status("status-reranking", "📊 Rerankeando resultados...")
         reranked = rerank_results(query, raw_results)
 
-        # Truncar contexto según el modelo: GPT-2 solo soporta ~1024 tokens
-        max_ctx_chars = GPT2_MAX_CONTEXT_CHARS if GPT2_MODE else 7000
-        context = "\n\n---\n\n".join(r["text"] for r in reranked)[:max_ctx_chars]
+        context = "\n\n---\n\n".join(r["text"] for r in reranked)[:4500]
         sources = list({r["source"] for r in reranked if r["source"] != "desconocido"})
         results["sources"] = sources
 
@@ -1592,14 +1453,6 @@ if prompt:
     st.session_state.messages.append({"role": "assistant", "content": display_answer})
     st.session_state.metrics = rag_result["metrics"]
 
-    # Forzar scroll antes del rerun
-    st.markdown('<div id="pre-rerun-anchor"></div>', unsafe_allow_html=True)
-    st.markdown("""<script>
-        window.parent.scrollTo(0, window.parent.document.body.scrollHeight);
-        var m = window.parent.document.querySelector('section.main');
-        if(m) m.scrollTop = m.scrollHeight;
-    </script>""", unsafe_allow_html=True)
-
     st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1613,70 +1466,50 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SCROLL AUTOMÁTICO — CSS anchor + JavaScript post-rerun
+# SCROLL AUTOMÁTICO — Mejorado con MutationObserver + múltiples fallbacks
 # ══════════════════════════════════════════════════════════════════════════════
-
-# Método 1: CSS que fuerza el scroll al fondo con un div ancla
-# Este se inyecta como componente HTML que Streamlit renderiza al final
-scroll_js = """
-<style>
-    /* Forzar que el contenedor principal haga scroll al ancla */
-    #scroll-anchor {
-        height: 1px;
-        margin: 0;
-        padding: 0;
-    }
-</style>
-
-<div id="scroll-anchor"></div>
-
+st.markdown("""
 <script>
-// Función principal de scroll
-function forceScrollBottom() {
-    // Método A: Anchor element
-    var anchor = document.getElementById('scroll-anchor');
-    if (anchor) {
-        anchor.scrollIntoView({ behavior: 'instant', block: 'end' });
+function scrollToBottom() {
+    // Estrategia 1: Scroll del contenedor principal de Streamlit
+    const mainSection = window.parent.document.querySelector('section.main');
+    if (mainSection) {
+        mainSection.scrollTop = mainSection.scrollHeight;
     }
 
-    // Método B: Todos los contenedores de Streamlit
-    var selectors = [
-        'section.main',
-        '[data-testid="stAppViewContainer"]',
-        '[data-testid="stChatMessageContainer"]',
-        '.main .block-container'
-    ];
-    selectors.forEach(function(sel) {
-        var el = window.parent.document.querySelector(sel);
-        if (el) { el.scrollTop = el.scrollHeight + 9999; }
-    });
-
-    // Método C: Último mensaje
-    var msgs = window.parent.document.querySelectorAll('[data-testid="stChatMessage"]');
+    // Estrategia 2: Scroll del último mensaje del chat
+    const msgs = window.parent.document.querySelectorAll('[data-testid="stChatMessage"]');
     if (msgs.length > 0) {
-        msgs[msgs.length - 1].scrollIntoView({ behavior: 'instant', block: 'end' });
+        msgs[msgs.length - 1].scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
 
-    // Método D: Window scroll
-    window.parent.scrollTo(0, window.parent.document.body.scrollHeight);
+    // Estrategia 3: Scroll del contenedor de chat
+    const chatContainer = window.parent.document.querySelector('[data-testid="stChatMessageContainer"]');
+    if (chatContainer) {
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    // Estrategia 4: Scroll de cualquier contenedor con overflow
+    const containers = window.parent.document.querySelectorAll('.main .block-container, [data-testid="stVerticalBlock"]');
+    containers.forEach(c => { c.scrollTop = c.scrollHeight; });
 }
 
-// Ejecutar agresivamente: inmediato + múltiples delays
-forceScrollBottom();
-var delays = [50, 100, 200, 400, 700, 1000, 1500, 2000, 3000, 4000, 6000, 8000];
-delays.forEach(function(d) { setTimeout(forceScrollBottom, d); });
+// Ejecutar inmediatamente y con delays progresivos
+scrollToBottom();
+[100, 300, 600, 1000, 1500, 2000, 3000, 5000].forEach(d => setTimeout(scrollToBottom, d));
 
-// Observador: scroll cada vez que cambia el DOM (streaming, nuevos mensajes)
+// MutationObserver: detecta cuando se agrega contenido nuevo al DOM
 try {
-    var target = window.parent.document.querySelector('section.main') ||
-                 window.parent.document.body;
-    var obs = new MutationObserver(function() {
-        setTimeout(forceScrollBottom, 50);
-        setTimeout(forceScrollBottom, 200);
-    });
-    obs.observe(target, { childList: true, subtree: true, characterData: true });
-    setTimeout(function() { obs.disconnect(); }, 60000);
+    const targetNode = window.parent.document.querySelector('section.main') ||
+                       window.parent.document.querySelector('[data-testid="stAppViewContainer"]');
+    if (targetNode) {
+        const observer = new MutationObserver(function(mutations) {
+            setTimeout(scrollToBottom, 100);
+        });
+        observer.observe(targetNode, { childList: true, subtree: true });
+        // Auto-desconectar después de 30 segundos para no desperdiciar recursos
+        setTimeout(() => observer.disconnect(), 30000);
+    }
 } catch(e) {}
 </script>
-"""
-st.markdown(scroll_js, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
