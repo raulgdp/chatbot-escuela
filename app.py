@@ -251,7 +251,7 @@ OPENAI_API_BASE = "https://api-inference.huggingface.co/v1"
 DEFAULT_MODEL = "raulgdp/gpt-acredita-350m"
 FAST_MODEL = "raulgdp/gpt-acredita-350m"
 
- ═══════════════════════════════════════════════════════════════════════════
+ #═══════════════════════════════════════════════════════════════════════════
 # INICIALIZAR CLIENTE CON MANEJO DE ERRORES
 # ═══════════════════════════════════════════════════════════════════════════
 try:
