@@ -88,8 +88,21 @@ def login():
         else:
             st.sidebar.error("❌ Credenciales incorrectas")
 
-if "auth" not in st.session_state:
-    st.session_state.auth = False
+# ── Inicialización completa del session_state ──────────────────────────────
+# Todas las variables que la app usa deben existir desde el primer render
+_DEFAULTS = {
+    "auth": False,
+    "user": "",
+    "messages": [],
+    "metrics": {},
+    "visits": 0,
+    "last_scores": {},
+    "counted": False,
+}
+for _key, _default in _DEFAULTS.items():
+    if _key not in st.session_state:
+        st.session_state[_key] = _default
+
 if not st.session_state.auth:
     login()
     st.stop()
@@ -223,20 +236,28 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════════════════════
 # CONEXIÓN APIs
 # ══════════════════════════════════════════════════════════════════════════════
-OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "").strip()
+#OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "").strip()
 #OPENAI_API_BASE = "https://openrouter.ai/api/v1"
-OPENAI_API_BASE="https://api.groq.com/openai/v1"
-DEFAULT_MODEL   = "llama-3.3-70b-versatile"
-FAST_MODEL      = "llama-3.3-70b-versatile"  # Para clasificación rápida
+#OPENAI_API_BASE="https://api.groq.com/openai/v1"
+#DEFAULT_MODEL   = "llama-3.3-70b-versatile"
+#FAST_MODEL      = "llama-3.3-70b-versatile"  # Para clasificación rápida
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONEXIÓN APIs
+# ══════════════════════════════════════════════════════════════════════════════
+# Configuración para servidor local (llama.cpp / LM Studio / vLLM)
+OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "sk-no-key-required").strip()
+OPENAI_API_BASE = "http://localhost:8080/v1"
+DEFAULT_MODEL   = "gpt-acredita-350m"
+FAST_MODEL      = "gpt-acredita-350m"   # ⬅️ ESTABA FALTANDO
 
 try:
     client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_API_BASE)
     _ = client.models.list()
-    st.sidebar.success(f"✅ OpenRouter: {DEFAULT_MODEL}")
+    st.sidebar.success(f"✅ Modelo local: {DEFAULT_MODEL}")
 except Exception as e:
-    st.sidebar.error(f"❌ OpenRouter: {str(e)[:80]}")
-    st.sidebar.info("Verifica OPENAI_API_KEY en Secrets")
-
+    st.sidebar.error(f"❌ Servidor local: {str(e)[:80]}")
+    st.sidebar.info("Verifica que tu servidor en localhost:8080 esté corriendo")
 try:
     qdrant = QdrantClient(
         url=get_secret("QDRANT_URL", "").strip(),
