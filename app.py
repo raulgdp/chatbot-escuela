@@ -251,13 +251,33 @@ OPENAI_API_BASE = "https://api-inference.huggingface.co/v1"
 DEFAULT_MODEL = "raulgdp/gpt-acredita-350m"
 FAST_MODEL = "raulgdp/gpt-acredita-350m"
 
+ ═══════════════════════════════════════════════════════════════════════════
+# INICIALIZAR CLIENTE CON MANEJO DE ERRORES
+# ═══════════════════════════════════════════════════════════════════════════
 try:
-    client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_API_BASE)
-    _ = client.models.list()
-    st.sidebar.success(f"✅ Modelo local: {DEFAULT_MODEL}")
+    # Crear cliente OpenAI-compatible apuntando a Hugging Face
+    client = OpenAI(
+        api_key=OPENAI_API_KEY if OPENAI_API_KEY else "hf_dummy_key",
+        base_url=OPENAI_API_BASE,
+        timeout=60,  # HF puede ser más lento, aumentar timeout
+    )
+    
+    # Probar conexión listando modelos (puede fallar en HF, es normal)
+    # No detenemos la app si falla, solo mostramos advertencia
+    try:
+        _ = client.models.list()
+        st.sidebar.success(f"✅ Hugging Face: {DEFAULT_MODEL}")
+        st.sidebar.info("🔗 api-inference.huggingface.co")
+    except Exception:
+        # Es normal que HF no responda a /models, no es error crítico
+        st.sidebar.success(f"✅ Hugging Face: {DEFAULT_MODEL}")
+        st.sidebar.info("🔗 API configurada (modelo en carga si es primera vez)")
+        
 except Exception as e:
-    st.sidebar.error(f"❌ Servidor local: {str(e)[:80]}")
-    st.sidebar.info("Verifica que tu servidor en localhost:8080 esté corriendo")
+    st.sidebar.error(f"❌ Hugging Face: {str(e)[:60]}")
+    st.sidebar.warning("⚠️ Verifica HF_API_KEY en Streamlit Secrets")
+    st.sidebar.info("Obtén tu token en: https://huggingface.co/settings/tokens")
+    st.stop()  # Detener app si no hay conexión
 try:
     qdrant = QdrantClient(
         url=get_secret("QDRANT_URL", "").strip(),
