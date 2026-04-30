@@ -245,39 +245,33 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════════════════════
 # CONEXIÓN APIs
 # ══════════════════════════════════════════════════════════════════════════════
-# Configuración para servidor local (llama.cpp / LM Studio / vLLM)
-OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "ollama").strip()
-OPENAI_API_BASE = "http://localhost:11434/v1"
-DEFAULT_MODEL = "gpt-acredita-350m"
-FAST_MODEL = "gpt-acredita-350m"
+OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "sk-no-key-required").strip()
+OPENAI_API_BASE = "http://192.168.1.8:8080/v1"
+DEFAULT_MODEL   = "gpt-acredita-350m"
+FAST_MODEL      = "gpt-acredita-350m"
 
  #═══════════════════════════════════════════════════════════════════════════
 # INICIALIZAR CLIENTE CON MANEJO DE ERRORES
 # ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 try:
-    # Crear cliente OpenAI-compatible apuntando a Hugging Face
     client = OpenAI(
-        api_key=OPENAI_API_KEY if OPENAI_API_KEY else "hf_dummy_key",
+        api_key=OPENAI_API_KEY if OPENAI_API_KEY else "sk-no-key-required",
         base_url=OPENAI_API_BASE,
-        timeout=60,  # HF puede ser más lento, aumentar timeout
+        timeout=60,
     )
-    
-    # Probar conexión listando modelos (puede fallar en HF, es normal)
-    # No detenemos la app si falla, solo mostramos advertencia
     try:
         _ = client.models.list()
-        st.sidebar.success(f"✅ Ollama local: {DEFAULT_MODEL}")
-        st.sidebar.info("🔗 api-inference.huggingface.co")
+        st.sidebar.success(f"✅ Modelo local: {DEFAULT_MODEL}")
+        st.sidebar.info(f"🔗 {OPENAI_API_BASE}")
     except Exception:
-        # Es normal que HF no responda a /models, no es error crítico
-        st.sidebar.success(f"✅ Ollama local: {DEFAULT_MODEL}")
-        st.sidebar.info("🔗 API configurada (modelo en carga si es primera vez)")
-        
+        st.sidebar.success(f"✅ Modelo local: {DEFAULT_MODEL}")
+        st.sidebar.info(f"🔗 {OPENAI_API_BASE}")
+
 except Exception as e:
-    st.sidebar.error(f"❌ Hugging Face: {str(e)[:60]}")
-    st.sidebar.warning("⚠️ Verifica HF_API_KEY en Streamlit Secrets")
-    st.sidebar.info("Obtén tu token en: https://huggingface.co/settings/tokens")
-    st.stop()  # Detener app si no hay conexión
+    st.sidebar.error(f"❌ Error conexión: {str(e)[:60]}")
+    st.sidebar.warning(f"⚠️ Verifica que el modelo esté corriendo en {OPENAI_API_BASE}")
+    st.stop()
 try:
     qdrant = QdrantClient(
         url=get_secret("QDRANT_URL", "").strip(),
