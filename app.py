@@ -1,9 +1,8 @@
 ﻿# ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  ChatAcredita PRO v3.1 — RAG + Agentes + Retroalimentación Vectorial      ║
 # ║  EISC — Universidad del Valle, Cali, Colombia                             ║
-# ║  FIX CRÍTICOS: Espacios en strings, total_mem→total_memory,               ║
-# ║  pipeline padding, dict keys limpios, cache_resource seguro,               ║
-# ║  generación Qwen estable con do_sample=True para Instruct                  ║
+# ║  CORRECCIONES: Espacios eliminados, total_memory, device_map limpio,      ║
+# ║  dict keys limpios, cache_resource compatible, do_sample=True para Instruct ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 import streamlit as st
 import os
@@ -267,7 +266,6 @@ st.sidebar.success("✅ Embeddings + Reranker: BGE-M3 (1024d)")
 # ─────────────────────────────────────────────
 QWEN_MODEL_ID = "raulgdp/qwen2.5-7b-acredita-cna-col"
 
-# ✅ CORREGIDO (compatible con Streamlit ≥1.20)
 @st.cache_resource(show_spinner="🤖 Cargando Qwen 7B acreditación CNA...")
 def load_qwen_local():
     import torch
@@ -275,10 +273,10 @@ def load_qwen_local():
     
     tokenizer = AutoTokenizer.from_pretrained(QWEN_MODEL_ID, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left"  # obligatorio para generation
+    tokenizer.padding_side = "left"
 
     if torch.cuda.is_available():
-        gpu_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # ✅ total_memory, no total_mem
+        gpu_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
         if gpu_mem >= 14:
             model = AutoModelForCausalLM.from_pretrained(
                 QWEN_MODEL_ID,
@@ -308,7 +306,6 @@ def load_qwen_local():
                     trust_remote_code=True,
                 )
     else:
-        # ✅ FALLBACK CPU: SIN device_map para evitar conflicto con accelerate
         model = AutoModelForCausalLM.from_pretrained(
             QWEN_MODEL_ID,
             torch_dtype=torch.float32,
@@ -424,6 +421,7 @@ Genera un JSON con:
 "keywords": lista de 4-6 términos clave para búsqueda BM25 (list)
 "lang": idioma detectado "es" o "en" (string)
 Solo JSON sin markdown."""
+    
     if st.session_state.get("use_qwen", False):
         try:
             raw = generate_qwen_full("Eres un experto en acreditación CNA. Responde solo con JSON.", prompt_text, max_new_tokens=350)
@@ -455,7 +453,8 @@ def build_bm25_index() -> tuple:
                     all_ids.append(point.id)
                     all_sources.append(point.payload.get("source", "desconocido"))
             offset = result[1]
-            if offset is None: break
+            if offset is None:
+                break
         tokenized = [normalize_text(t).split() for t in all_texts]
         bm25 = BM25Okapi(tokenized)
         return bm25, all_texts, all_ids, all_sources
@@ -469,6 +468,7 @@ def hybrid_search_rrf(query: str, query_variants: list[str], use_feedback: bool 
     collection = FEEDBACK_COLLECTION if use_feedback else COLLECTION_NAME
     rrf_scores: dict[str, float] = {}
     id_to_payload: dict[str, dict] = {}
+    
     for q in query_variants:
         try:
             emb = embedder.encode([q], normalize_embeddings=True)[0]
@@ -476,8 +476,10 @@ def hybrid_search_rrf(query: str, query_variants: list[str], use_feedback: bool 
             for rank, r in enumerate(results):
                 pid = str(r.id)
                 rrf_scores[pid] = rrf_scores.get(pid, 0.0) + 1.0 / (k_rrf + rank + 1)
-                if r.payload: id_to_payload[pid] = r.payload
-        except Exception: pass
+                if r.payload:
+                    id_to_payload[pid] = r.payload
+        except Exception:
+            pass
 
     if not use_feedback:
         bm25, bm25_texts, bm25_ids, bm25_sources = build_bm25_index()
@@ -501,15 +503,19 @@ def hybrid_search_rrf(query: str, query_variants: list[str], use_feedback: bool 
     return results
 
 def rerank_results(query: str, results: list[dict]) -> list[dict]:
-    if not results: return []
+    if not results:
+        return []
     for r in results:
         base_score = r.get("rrf_score", r.get("score", 0.0))
-        if "| " in r["text"] and r["text"].count("| ") > 6: base_score += 0.003
-        if "feedback" in r.get("source", "").lower(): base_score += 0.005
+        if "| " in r["text"] and r["text"].count("| ") > 6:
+            base_score += 0.003
+        if "feedback" in r.get("source", "").lower():
+            base_score += 0.005
         q_words = set(normalize_text(query).split())
         chunk_words = set(r["text"].lower().split())
         overlap = len(q_words & chunk_words)
-        if overlap > 3: base_score += 0.001 * overlap
+        if overlap > 3:
+            base_score += 0.001 * overlap
         r["rerank_score"] = base_score
     reranked = sorted(results, key=lambda x: x["rerank_score"], reverse=True)
     return reranked[:TOP_K_FINAL]
@@ -525,6 +531,7 @@ AGENT_TYPES = {
     "sintesis": "Pregunta de resumen, conclusión o visión general de múltiples aspectos",
     "general": "Cualquier otra pregunta sobre acreditación EISC",
 }
+
 AGENT_PROMPTS = {
     "estadistica": "Presenta los datos numéricos con precisión. Usa tablas Markdown cuando hay más de 2 valores comparables. Indica siempre el periodo/año de los datos. Si hay tendencias, señálalas brevemente.",
     "normativa": "Cita el artículo o resolución exacta si está en el contexto. Indica si la norma es vigente o histórica. Formato preferido: Artículo X — [contenido resumido]. Nunca inventes referencias normativas.",
@@ -540,17 +547,20 @@ def route_query(query: str) -> str:
 {descriptions}
 Pregunta: {query}
 Responde solo con la clave (estadistica/normativa/proceso/comparacion/sintesis/general)."""
+    
     if st.session_state.get("use_qwen", False):
         try:
             raw = generate_qwen_full("Clasifica preguntas. Responde solo con una palabra.", prompt_text, max_new_tokens=20)
             agent = raw.strip().lower().split()[0] if raw.strip() else "general"
             return agent if agent in AGENT_TYPES else "general"
-        except Exception: return "general"
+        except Exception:
+            return "general"
     try:
         r = client.chat.completions.create(model=FAST_MODEL, messages=[{"role": "user", "content": prompt_text}], temperature=0, max_tokens=20)
         agent = r.choices[0].message.content.strip().lower()
         return agent if agent in AGENT_TYPES else "general"
-    except Exception: return "general"
+    except Exception:
+        return "general"
 
 def classify_intent(prompt: str, last_answer: str) -> str:
     prompt_llm = f"""Contexto — respuesta previa del sistema:
@@ -561,17 +571,20 @@ Clasifica:
 "pregunta" si el usuario hace una nueva pregunta o tema
 "retroalimentacion" si el usuario corrige, mejora o complementa la respuesta anterior
 JSON: {{"tipo": "pregunta" o "retroalimentacion"}}"""
+    
     if st.session_state.get("use_qwen", False):
         try:
             raw = generate_qwen_full("Clasifica intenciones. Responde solo con JSON.", prompt_llm, max_new_tokens=50)
             data = clean_json(raw)
             return data.get("tipo", "pregunta")
-        except Exception: return "pregunta"
+        except Exception:
+            return "pregunta"
     try:
         r = client.chat.completions.create(model=FAST_MODEL, messages=[{"role": "user", "content": prompt_llm}], temperature=0, max_tokens=50)
         data = clean_json(r.choices[0].message.content)
         return data.get("tipo", "pregunta")
-    except Exception: return "pregunta"
+    except Exception:
+        return "pregunta"
 
 # ─────────────────────────────────────────────
 # M6 · ANSWER AGENT v2 — CON STREAMING Y CITAS INLINE + QWEN LOCAL
@@ -605,10 +618,15 @@ PREGUNTA DEL USUARIO:
 
     def _stream_groq(self, system_msg: str, user_msg: str) -> Generator[str, None, None]:
         try:
-            stream = client.chat.completions.create(model=DEFAULT_MODEL, messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}], temperature=0.2, max_tokens=1000, stream=True)
+            stream = client.chat.completions.create(
+                model=DEFAULT_MODEL,
+                messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
+                temperature=0.2, max_tokens=1000, stream=True,
+            )
             for chunk in stream:
                 delta = chunk.choices[0].delta.content
-                if delta: yield delta
+                if delta:
+                    yield delta
         except Exception as e:
             yield f"⚠️ Error Groq: {str(e)[:120]}"
 
@@ -637,37 +655,55 @@ CONTEXTO RECUPERADO: {context[:1200]}
 RESPUESTA GENERADA: {answer[:700]}
 Evalúa en escala 0.0 a 1.0 y responde SOLO con JSON:
 {{"faithfulness": <float>, "answer_relevance": <float>, "context_precision": <float>, "hallucination_risk": <float>}}"""
+    
     default_scores = {"faithfulness": 0.8, "answer_relevance": 0.8, "context_precision": 0.7, "hallucination_risk": 0.2}
+    
     if st.session_state.get("use_qwen", False):
         try:
             raw = generate_qwen_full("Evalúa respuestas RAG. Responde solo con JSON.", eval_prompt, max_new_tokens=150)
             scores = clean_json(raw)
             for k in default_scores:
-                if k not in scores or not isinstance(scores[k], (int, float)): scores[k] = default_scores[k]
+                if k not in scores or not isinstance(scores[k], (int, float)):
+                    scores[k] = default_scores[k]
             _log_evaluation_async(query, scores)
             return scores
-        except Exception: return default_scores
+        except Exception:
+            return default_scores
+    
     try:
         r = client.chat.completions.create(model=FAST_MODEL, messages=[{"role": "user", "content": eval_prompt}], temperature=0, max_tokens=150)
         scores = clean_json(r.choices[0].message.content)
         for k in default_scores:
-            if k not in scores or not isinstance(scores[k], (int, float)): scores[k] = default_scores[k]
+            if k not in scores or not isinstance(scores[k], (int, float)):
+                scores[k] = default_scores[k]
         _log_evaluation_async(query, scores)
         return scores
-    except Exception: return default_scores
+    except Exception:
+        return default_scores
 
 def _log_evaluation_async(query: str, scores: dict):
     try:
         emb = embedder.encode([query], normalize_embeddings=True)[0]
-        qdrant.upsert(collection_name=EVAL_COLLECTION, points=[PointStruct(id=str(uuid.uuid4()), vector=emb.tolist(), payload={"query": query, "scores": scores, "timestamp": time.time(), "user": st.session_state.get("user", "unknown")})])
-    except Exception: pass
+        qdrant.upsert(
+            collection_name=EVAL_COLLECTION,
+            points=[PointStruct(
+                id=str(uuid.uuid4()),
+                vector=emb.tolist(),
+                payload={"query": query, "scores": scores, "timestamp": time.time(), "user": st.session_state.get("user", "unknown")},
+            )]
+        )
+    except Exception:
+        pass
 
 def quality_badge(scores: dict) -> tuple[str, str]:
     faith = scores.get("faithfulness", 0.8)
     halluc = scores.get("hallucination_risk", 0.2)
-    if faith >= 0.8 and halluc <= 0.2: return "Alta confianza", "q-high"
-    elif faith >= 0.6 and halluc <= 0.4: return "Confianza media", "q-med"
-    else: return "Verificar respuesta", "q-low"
+    if faith >= 0.8 and halluc <= 0.2:
+        return "Alta confianza", "q-high"
+    elif faith >= 0.6 and halluc <= 0.4:
+        return "Confianza media", "q-med"
+    else:
+        return "Verificar respuesta", "q-low"
 
 # ─────────────────────────────────────────────
 # M9 · FEEDBACK ENRIQUECIDO CON DEDUPLICACIÓN VECTORIAL
@@ -675,25 +711,51 @@ def quality_badge(scores: dict) -> tuple[str, str]:
 def save_feedback_dedup(query: str, answer: str, rating: int, tags: list[str], corrected: bool = False) -> str:
     combined = f"PREGUNTA: {query}\n\nRESPUESTA: {answer[:500]}"
     emb = embedder.encode([combined], normalize_embeddings=True)[0]
+    
     try:
-        existing = qdrant.query_points(collection_name=FEEDBACK_COLLECTION, query=emb.tolist(), limit=1, with_payload=True).points
+        existing = qdrant.query_points(
+            collection_name=FEEDBACK_COLLECTION,
+            query=emb.tolist(),
+            limit=1,
+            with_payload=True,
+        ).points
+        
         if existing and existing[0].score > 0.92:
             old = existing[0].payload
             old_rating = old.get("rating", rating)
             old_votes = old.get("votes", 1)
             new_rating = round((old_rating * old_votes + rating) / (old_votes + 1), 2)
-            qdrant.set_payload(collection_name=FEEDBACK_COLLECTION, payload={"rating": new_rating, "votes": old_votes + 1, "tags": list(set(old.get("tags", []) + tags)), "last_vote": time.time()}, points=[existing[0].id])
+            qdrant.set_payload(
+                collection_name=FEEDBACK_COLLECTION,
+                payload={"rating": new_rating, "votes": old_votes + 1, "tags": list(set(old.get("tags", []) + tags)), "last_vote": time.time()},
+                points=[existing[0].id],
+            )
             return "updated"
-        qdrant.upsert(collection_name=FEEDBACK_COLLECTION, points=[PointStruct(id=str(uuid.uuid4()), vector=emb.tolist(), payload={"text": combined, "query": query, "answer": answer[:600], "source": "feedback_usuario", "type": "respuesta_corregida" if corrected else "valoracion", "rating": rating, "tags": tags, "votes": 1, "timestamp": time.time(), "user": st.session_state.get("user", "unknown")})])
+        
+        qdrant.upsert(
+            collection_name=FEEDBACK_COLLECTION,
+            points=[PointStruct(
+                id=str(uuid.uuid4()),
+                vector=emb.tolist(),
+                payload={
+                    "text": combined, "query": query, "answer": answer[:600],
+                    "source": "feedback_usuario", "type": "respuesta_corregida" if corrected else "valoracion",
+                    "rating": rating, "tags": tags, "votes": 1,
+                    "timestamp": time.time(), "user": st.session_state.get("user", "unknown"),
+                },
+            )],
+        )
         return "created"
-    except Exception: return "error"
+    except Exception:
+        return "error"
 
 # ─────────────────────────────────────────────
 # M12 · PROCESAMIENTO ASYNC DE DOCUMENTOS
 # ─────────────────────────────────────────────
 def embed_chunks_parallel(chunks: list[str], batch_size: int = 32) -> np.ndarray:
     batches = [chunks[i:i + batch_size] for i in range(0, len(chunks), batch_size)]
-    def embed_batch(batch): return embedder.encode(batch, normalize_embeddings=True)
+    def embed_batch(batch):
+        return embedder.encode(batch, normalize_embeddings=True)
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(embed_batch, batches))
     return np.vstack(results)
@@ -707,7 +769,12 @@ def process_uploaded_document(pdf_bytes: bytes, filename: str) -> tuple[list, li
         all_text = pymupdf4llm.to_markdown(doc)
         doc.close()
         os.unlink(tmp_path)
-        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200, separators=["\n\n## ", "\n\n### ", "\n\n#### ", "\n\n| ", "\n\n", "\n", " ", " "], is_separator_regex=False)
+        
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000, chunk_overlap=200,
+            separators=["\n\n## ", "\n\n### ", "\n\n#### ", "\n\n| ", "\n\n", "\n", " ", ""],
+            is_separator_regex=False,
+        )
         chunks = splitter.split_text(all_text)
         valid = [c.strip() for c in chunks if len(c.strip()) > 80 and not c.strip().endswith("|") and not c.strip().endswith("[TABLA")]
         return valid, [filename] * len(valid)
@@ -719,7 +786,14 @@ def add_chunks_to_qdrant(chunks: list[str], sources: list[str]) -> bool:
     try:
         normalized = [normalize_text(c) for c in chunks]
         embeddings = embed_chunks_parallel(normalized)
-        points = [PointStruct(id=str(uuid.uuid4()), vector=embeddings[i].tolist(), payload={"text": normalized[i], "source": sources[i], "chunk_id": i, "type": "documento_subido", "timestamp": time.time()}) for i in range(len(normalized))]
+        points = [
+            PointStruct(
+                id=str(uuid.uuid4()),
+                vector=embeddings[i].tolist(),
+                payload={"text": normalized[i], "source": sources[i], "chunk_id": i, "type": "documento_subido", "timestamp": time.time()},
+            )
+            for i in range(len(normalized))
+        ]
         qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
         st.success(f"✅ {len(points)} chunks añadidos a Qdrant")
         return True
@@ -731,7 +805,8 @@ def add_chunks_to_qdrant(chunks: list[str], sources: list[str]) -> bool:
 # SISTEMA RAG PRINCIPAL
 # ─────────────────────────────────────────────
 class RAGSystemV3:
-    def __init__(self): self.answer_agent = AnswerAgentV2()
+    def __init__(self):
+        self.answer_agent = AnswerAgentV2()
 
     def run_stream(self, query: str, messages: list, last_answer: str = "", status_placeholder=None) -> dict:
         start = time.time()
@@ -763,6 +838,7 @@ class RAGSystemV3:
         results["sources"] = sources
         agent_type = route_query(query)
         results["agent_type"] = agent_type
+        
         if intent == "retroalimentacion" and last_answer:
             show_status("status-corrigiendo", "🔄 Corrigiendo con tu feedback...")
             corrected_answer = self.answer_agent.generate_correction(query, last_answer, context)
@@ -775,6 +851,7 @@ class RAGSystemV3:
             def single_token(): yield corrected_answer
             results["tokens"] = single_token()
             return results
+        
         show_status("status-generando", f"✍️ Generando con {backend_label}...")
         token_gen = self.answer_agent.stream(query=query, context=context, memory_ctx=memory_ctx, agent_type=agent_type, sources=sources)
         results["tokens"] = token_gen
@@ -790,12 +867,18 @@ rag_system = RAGSystemV3()
 COUNTER_FILE = "counter.json"
 def load_counter() -> int:
     try:
-        with open(COUNTER_FILE, "r") as f: return json.load(f).get("visits", 0)
-    except Exception: return 0
+        with open(COUNTER_FILE, "r") as f:
+            return json.load(f).get("visits", 0)
+    except Exception:
+        return 0
+
 def save_counter(value: int):
     try:
-        with open(COUNTER_FILE, "w") as f: json.dump({"visits": value}, f)
-    except Exception: pass
+        with open(COUNTER_FILE, "w") as f:
+            json.dump({"visits": value}, f)
+    except Exception:
+        pass
+
 if "counted" not in st.session_state:
     visits = load_counter() + 1
     save_counter(visits)
@@ -807,8 +890,16 @@ else:
 # ─────────────────────────────────────────────
 # INICIALIZACIÓN DE SESSION STATE
 # ─────────────────────────────────────────────
-for key, default in [("messages", []), ("metrics", {"latency": 0, "intent": "pregunta", "corrected": False, "agent": "general", "backend": "groq"}), ("last_scores", {}), ("pending_feedback", None), ("use_qwen", False)]:
-    if key not in st.session_state: st.session_state[key] = default
+for key, default in [
+    ("messages", []),
+    ("metrics", {"latency": 0, "intent": "pregunta", "corrected": False, "agent": "general", "backend": "groq"}),
+    ("last_scores", {}),
+    ("pending_feedback", None),
+    ("use_qwen", False),
+    ("user", "invitado"),  # ✅ AÑADIDO para evitar KeyError
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 # ─────────────────────────────────────────────
 # INTERFAZ PRINCIPAL
@@ -822,10 +913,13 @@ st.markdown('<div id="bottom"></div>', unsafe_allow_html=True)
 with st.sidebar:
     st.markdown("### 🤖 Modelo LLM")
     backend_options = []
-    if groq_available: backend_options.append("☁️ Groq — Llama 3.3 70B")
+    if groq_available:
+        backend_options.append("☁️ Groq — Llama 3.3 70B")
     backend_options.append("🖥️ Qwen 7B local — acreditación CNA")
+    
     llm_backend = st.selectbox("Selecciona el backend de generación:", backend_options, key="llm_backend_selector", help="Groq es más rápido (API cloud). Qwen 7B es tu modelo fine-tuneado local.")
     st.session_state.use_qwen = "Qwen" in llm_backend
+    
     if st.session_state.use_qwen:
         import torch
         with st.spinner("Cargando Qwen 7B..."):
@@ -837,13 +931,16 @@ with st.sidebar:
                 st.error(f"❌ Error cargando Qwen: {str(e)[:100]}")
                 st.session_state.use_qwen = False
     else:
-        if groq_available: st.info(f"Usando Groq: {DEFAULT_MODEL}")
+        if groq_available:
+            st.info(f"Usando Groq: {DEFAULT_MODEL}")
         else:
             st.warning("Groq no disponible, se usará Qwen local")
             st.session_state.use_qwen = True
+    
     st.markdown("---")
     st.markdown("### 📁 Subir Documento")
     uploaded_file = st.file_uploader("PDF sobre acreditación", type=["pdf"], help="Se añadirá al índice vectorial automáticamente")
+    
     if uploaded_file:
         if st.button("🚀 Procesar e Indexar", type="primary"):
             with st.spinner("Extrayendo texto del PDF..."):
@@ -862,18 +959,25 @@ with st.sidebar:
                         try:
                             col_info = qdrant.get_collection(COLLECTION_NAME)
                             st.info(f"📊 Total de chunks en Qdrant: {col_info.points_count}")
-                        except Exception: pass
+                        except Exception:
+                            pass
             else:
                 st.warning("⚠️ No se extrajeron chunks válidos del PDF.")
+    
     st.markdown("---")
     col1, col2 = st.columns([1, 2])
     with col1:
         avatar_path = "data/yo.webp"
-        if os.path.exists(avatar_path): st.image(avatar_path, width=70)
-        else: st.markdown("👤")
+        if os.path.exists(avatar_path):
+            st.image(avatar_path, width=70)
+        else:
+            st.markdown("👤")
     with col2:
-        st.markdown(f"**{st.session_state.user}**")
+        # ✅ Acceso seguro con .get()
+        user_display = st.session_state.get("user", "invitado")
+        st.markdown(f"**{user_display}**")
         st.caption("EISC · Univalle")
+    
     st.markdown("### 📊 Métricas de sesión")
     metrics = st.session_state.metrics
     st.metric("⏱️ Latencia", f"{metrics.get('latency', 0)} s")
@@ -882,6 +986,7 @@ with st.sidebar:
     st.metric("🔍 Intención", metrics.get('intent', 'pregunta').capitalize())
     st.metric("📚 Chunks usados", metrics.get('chunks', 0))
     st.metric("👥 Visitas", st.session_state.visits)
+    
     if st.session_state.last_scores:
         st.markdown("### 🔬 Calidad de última respuesta")
         scores = st.session_state.last_scores
@@ -891,11 +996,13 @@ with st.sidebar:
         halluc = scores.get("hallucination_risk", 0.2)
         color = "🟢" if halluc < 0.3 else ("🟡" if halluc < 0.5 else "🔴")
         st.caption(f"{color} Riesgo de alucinación: {halluc:.0%}")
+    
     st.markdown("---")
     if st.button("🗑️ Limpiar historial", use_container_width=True):
         st.session_state.messages = []
         st.session_state.last_scores = {}
         st.rerun()
+    
     st.markdown("---")
     with st.expander("🔧 Diagnóstico del índice", expanded=False):
         try:
@@ -911,13 +1018,18 @@ with st.sidebar:
                 try:
                     while True:
                         res = qdrant.scroll(collection_name=COLLECTION_NAME, limit=200, offset=offset_diag, with_payload=["source"], with_vectors=False)
-                        for pt in res[0]: sources_found.add(pt.payload.get("source", "desconocido"))
+                        for pt in res[0]:
+                            sources_found.add(pt.payload.get("source", "desconocido"))
                         offset_diag = res[1]
-                        if offset_diag is None: break
-                except Exception: pass
+                        if offset_diag is None:
+                            break
+                except Exception:
+                    pass
                 if sources_found:
-                    for src in sorted(sources_found): st.caption(f"📄 {src}")
-                else: st.caption("Sin fuentes identificadas")
+                    for src in sorted(sources_found):
+                        st.caption(f"📄 {src}")
+                else:
+                    st.caption("Sin fuentes identificadas")
                 st.markdown("**Probar búsqueda:**")
                 test_query = st.text_input("Escribe una consulta de prueba", key="diag_query", placeholder="ej: competencias del programa")
                 if test_query and st.button("🔍 Buscar", key="diag_search"):
@@ -925,7 +1037,8 @@ with st.sidebar:
                         try:
                             emb = embedder.encode([test_query], normalize_embeddings=True)[0]
                             hits = qdrant.query_points(collection_name=COLLECTION_NAME, query=emb.tolist(), limit=3, with_payload=True).points
-                            if not hits: st.warning("No se encontraron resultados.")
+                            if not hits:
+                                st.warning("No se encontraron resultados.")
                             else:
                                 for j, hit in enumerate(hits):
                                     score = round(hit.score, 4)
@@ -935,38 +1048,51 @@ with st.sidebar:
                                     st.caption(text)
                                     st.markdown("---")
                                 best = hits[0].score
-                                if best < 0.3: st.error(f"⚠️ Score máximo muy bajo ({best:.2f}).")
-                                elif best < 0.5: st.warning(f"Score moderado ({best:.2f}).")
-                                else: st.success(f"Score bueno ({best:.2f}).")
-                        except Exception as e: st.error(f"Error en búsqueda: {str(e)[:100]}")
-        except Exception as e: st.error(f"Error conectando a Qdrant: {str(e)[:100]}")
+                                if best < 0.3:
+                                    st.error(f"⚠️ Score máximo muy bajo ({best:.2f}).")
+                                elif best < 0.5:
+                                    st.warning(f"Score moderado ({best:.2f}).")
+                                else:
+                                    st.success(f"Score bueno ({best:.2f}).")
+                        except Exception as e:
+                            st.error(f"Error en búsqueda: {str(e)[:100]}")
+        except Exception as e:
+            st.error(f"Error conectando a Qdrant: {str(e)[:100]}")
 
 # ─────────────────────────────────────────────
 # M8 · MANEJO DE INPUT CON STREAMING REAL
 # ─────────────────────────────────────────────
 avatar_b64 = get_base64_image("data/yo.webp") or ""
 prompt = st.chat_input("Escribe tu pregunta sobre acreditación EISC...")
+
 if prompt:
-    if not check_rate_limit(st.session_state.user):
+    if not check_rate_limit(st.session_state.get("user", "invitado")):
         st.warning(f"⚠️ Límite de {MAX_REQUESTS_PER_MINUTE} consultas/minuto alcanzado.")
         st.stop()
+    
     prompt_clean = sanitize_query(prompt)
     last_answer = ""
     for m in reversed(st.session_state.messages):
         if m["role"] == "assistant":
             last_answer = re.sub(r"<[^>]+>", " ", m.get("content", ""))[:800]
             break
+    
     st.session_state.messages.append({"role": "user", "content": prompt_clean})
-    with st.chat_message("user"): st.markdown(prompt_clean)
+    with st.chat_message("user"):
+        st.markdown(prompt_clean)
+    
     status_ph = st.empty()
     rag_result = rag_system.run_stream(query=prompt_clean, messages=st.session_state.messages, last_answer=last_answer, status_placeholder=status_ph)
+    
     backend_label = "Qwen 7B" if st.session_state.get("use_qwen") else "Groq"
-    status_ph.markdown(f'<div class="thinking-avatar status-generando">{"<img src=data:image/webp;base64," + avatar_b64 + " class=avatar-img>" if avatar_b64 else ""} <span>✍️ Generando con {backend_label}...</span></div>', unsafe_allow_html=True)
+    status_ph.markdown(f'<div class="thinking-avatar status-generando">{"<img src=\"data:image/webp;base64,\" + avatar_b64 + \" class=avatar-img>" if avatar_b64 else ""} <span>✍️ Generando con {backend_label}...</span></div>', unsafe_allow_html=True)
+    
     full_answer = ""
     with st.chat_message("assistant"):
         stream_placeholder = st.empty()
         if rag_result["corrected"]:
-            for token in rag_result["tokens"]: full_answer += token
+            for token in rag_result["tokens"]:
+                full_answer += token
             st.markdown('<span style="color:#e65100;font-weight:bold;">✏️ Respuesta corregida según tu feedback</span>', unsafe_allow_html=True)
             stream_placeholder.markdown(full_answer)
         else:
@@ -974,15 +1100,19 @@ if prompt:
                 full_answer += token
                 stream_placeholder.markdown(full_answer + "▌")
             stream_placeholder.markdown(full_answer)
+        
         context_for_eval = rag_result.get("context_used", full_answer[:1200])
         status_ph.markdown(f'<div class="thinking-avatar status-evaluando"><span>🔬 Evaluando calidad...</span></div>', unsafe_allow_html=True)
         scores = evaluate_response(prompt_clean, context_for_eval, full_answer)
         st.session_state.last_scores = scores
         rag_result["metrics"]["scores"] = scores
+        
         badge_label, badge_class = quality_badge(scores)
         st.markdown(f'<span class="quality-badge {badge_class}">🔬 {badge_label}</span>', unsafe_allow_html=True)
+        
         if scores.get("hallucination_risk", 0) > HALLUCINATION_THRESHOLD:
             st.warning("⚠️ Esta respuesta podría contener información no verificada. Consulta directamente los documentos originales.")
+        
         sources = rag_result.get("sources", [])
         if sources:
             st.markdown('<div class="sources-container">', unsafe_allow_html=True)
@@ -993,6 +1123,7 @@ if prompt:
             backend_info = rag_result["metrics"].get("backend", "groq")
             st.caption(f"Agente: {agent_type} · Backend: {backend_info} · Chunks: {rag_result['metrics'].get('chunks', 0)} · Latencia: {rag_result['metrics'].get('latency', 0)}s")
             st.markdown("</div>", unsafe_allow_html=True)
+        
         st.markdown("**¿Fue útil esta respuesta?**")
         rating_cols = st.columns(5)
         rating_labels = ["😞 Muy mala", "😕 Mala", "😐 Regular", "🙂 Buena", "😄 Excelente"]
@@ -1000,13 +1131,17 @@ if prompt:
             if col.button(label.split()[0], key=f"rating_btn_{i}_{len(st.session_state.messages)}", help=label):
                 save_feedback_dedup(query=prompt_clean, answer=full_answer, rating=i + 1, tags=[f"rating_{i+1}", agent_type])
                 st.toast(f"✅ Valoración guardada ({label.split()[1]})", icon="⭐")
+    
     time.sleep(0.5)
     status_ph.empty()
+    
     display_answer = full_answer
-    if rag_result["corrected"]: display_answer = '<span class="feedback-indicator">✏️ Corregido</span> <br>' + display_answer
+    if rag_result["corrected"]:
+        display_answer = '<span class="feedback-indicator">✏️ Corregido</span> <br>' + display_answer
     if sources:
         src_html = " ".join(f'<span class="source-badge">📄 {s}</span>' for s in sources)
         display_answer += f'<br><br><div class="sources-container"><strong>📚 Fuentes:</strong> {src_html}</div>'
+    
     st.session_state.messages.append({"role": "assistant", "content": display_answer})
     st.session_state.metrics = rag_result["metrics"]
     st.rerun()
