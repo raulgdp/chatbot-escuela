@@ -275,23 +275,14 @@ def load_qwen_local():
     
     tokenizer = AutoTokenizer.from_pretrained(QWEN_MODEL_ID, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left"
+    tokenizer.padding_side = "left"  # obligatorio para generation
 
     if torch.cuda.is_available():
-        gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-        st.sidebar.success(f"🖥️ Qwen 7B acreditación (CUDA {gpu_mem_gb:.1f}GB)")
-        
-        if gpu_mem_gb >= 16:
+        gpu_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # ✅ total_memory, no total_mem
+        if gpu_mem >= 14:
             model = AutoModelForCausalLM.from_pretrained(
                 QWEN_MODEL_ID,
                 torch_dtype=torch.bfloat16,
-                device_map="auto",
-                trust_remote_code=True,
-            )
-        elif gpu_mem_gb >= 10:
-            model = AutoModelForCausalLM.from_pretrained(
-                QWEN_MODEL_ID,
-                torch_dtype=torch.float16,
                 device_map="auto",
                 trust_remote_code=True,
             )
@@ -299,20 +290,28 @@ def load_qwen_local():
             try:
                 from transformers import BitsAndBytesConfig
                 bnb_config = BitsAndBytesConfig(
-                    load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16,
-                    bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_quant_type="nf4",
                 )
                 model = AutoModelForCausalLM.from_pretrained(
-                    QWEN_MODEL_ID, quantization_config=bnb_config, device_map="auto",
+                    QWEN_MODEL_ID,
+                    quantization_config=bnb_config,
+                    device_map="auto",
                     trust_remote_code=True,
                 )
             except ImportError:
-                st.error("❌ bitsandbytes no instalado. pip install bitsandbytes")
-                return None, None
+                model = AutoModelForCausalLM.from_pretrained(
+                    QWEN_MODEL_ID,
+                    torch_dtype=torch.float16,
+                    device_map="auto",
+                    trust_remote_code=True,
+                )
     else:
-        st.sidebar.warning("⚠️ Sin GPU — cargando Qwen en CPU")
+        # ✅ FALLBACK CPU: SIN device_map para evitar conflicto con accelerate
         model = AutoModelForCausalLM.from_pretrained(
-            QWEN_MODEL_ID, torch_dtype=torch.float32, device_map="cpu",
+            QWEN_MODEL_ID,
+            torch_dtype=torch.float32,
             trust_remote_code=True,
         )
 
