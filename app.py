@@ -1,10 +1,11 @@
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  ChatAcredita PRO v3.0 — RAG + Agentes + Retroalimentación Vectorial        ║
-# ║  EISC — Universidad del Valle, Cali, Colombia                               ║
-# ║  Mejoras: M1 Query Rewriting · M2 BM25 Real · M3 Reranker · M4 Memoria     ║
-# ║           M5 Router Agentes · M6 AnswerAgent v2 · M7 Evaluador RAGAS        ║
-# ║           M8 Streaming · M9 Feedback Deduplicado · M10 Observabilidad       ║
-# ║           M11 Seguridad · M12 Procesamiento Async                           ║
+# ║  ChatAcredita PRO v3.1 — RAG + Agentes + Retroalimentación Vectorial      ║
+# ║  EISC — Universidad del Valle, Cali, Colombia                             ║
+# ║  Mejoras: M1 Query Rewriting · M2 BM25 Real · M3 Reranker · M4 Memoria   ║
+# ║           M5 Router Agentes · M6 AnswerAgent v2 · M7 Evaluador RAGAS     ║
+# ║           M8 Streaming · M9 Feedback Deduplicado · M10 Observabilidad    ║
+# ║           M11 Seguridad · M12 Procesamiento Async                         ║
+# ║           M13 Backend Qwen 7B local (fine-tuneado acreditación)           ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 import streamlit as st
@@ -98,7 +99,7 @@ if not st.session_state.auth:
 # CONFIGURACIÓN GLOBAL
 # ══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="ChatAcredita PRO v3 - EISC-Univalle",
+    page_title="ChatAcredita PRO v3.1 - EISC-Univalle",
     page_icon="🎓",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -215,28 +216,32 @@ header {visibility: hidden;}
 
 st.markdown("""
 <div class="custom-header">
-    🎓 ChatAcredita PRO v3 — EISC (Universidad del Valle)
-    &nbsp;·&nbsp; RAG + Agentes + Retroalimentación Vectorial
+    🎓 ChatAcredita PRO v3.1 — EISC (Universidad del Valle)
+    &nbsp;·&nbsp; RAG + Agentes + Qwen 7B local
 </div>
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CONEXIÓN APIs
+# CONEXIÓN APIs — Groq (Llama 3.3 70B)
 # ══════════════════════════════════════════════════════════════════════════════
 OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "").strip()
-#OPENAI_API_BASE = "https://openrouter.ai/api/v1"
-OPENAI_API_BASE="https://api.groq.com/openai/v1"
+OPENAI_API_BASE = "https://api.groq.com/openai/v1"
 DEFAULT_MODEL   = "llama-3.3-70b-versatile"
-FAST_MODEL      = "llama-3.3-70b-versatile"  # Para clasificación rápida
+FAST_MODEL      = "llama-3.3-70b-versatile"
 
+groq_available = False
 try:
     client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_API_BASE)
     _ = client.models.list()
-    st.sidebar.success(f"✅ OpenRouter: {DEFAULT_MODEL}")
+    groq_available = True
+    st.sidebar.success(f"✅ Groq: {DEFAULT_MODEL}")
 except Exception as e:
-    st.sidebar.error(f"❌ OpenRouter: {str(e)[:80]}")
+    st.sidebar.error(f"❌ Groq: {str(e)[:80]}")
     st.sidebar.info("Verifica OPENAI_API_KEY en Secrets")
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CONEXIÓN Qdrant
+# ══════════════════════════════════════════════════════════════════════════════
 try:
     qdrant = QdrantClient(
         url=get_secret("QDRANT_URL", "").strip(),
@@ -248,7 +253,6 @@ try:
         st.error(f"❌ Colección '{COLLECTION_NAME}' no encontrada")
         st.stop()
 
-    # Crear colecciones auxiliares si no existen
     for col in [FEEDBACK_COLLECTION, EVAL_COLLECTION]:
         if col not in existing:
             qdrant.create_collection(
@@ -267,10 +271,124 @@ except Exception as e:
 def load_embedder():
     return SentenceTransformer("BAAI/bge-m3", device="cpu")
 
-# Reranking con BGE-M3 (mismo embedder — multilingüe, sin modelo extra)
-
 embedder = load_embedder()
 st.sidebar.success("✅ Embeddings + Reranker: BGE-M3 (1024d)")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# M13 · BACKEND LOCAL: Qwen 2.5-7B fine-tuneado para acreditación CNA
+# ══════════════════════════════════════════════════════════════════════════════
+QWEN_MODEL_ID = "raulgdp/qwen2.5-7b-acredita-cna-col"
+
+@st.cache_resource(show_spinner="🤖 Cargando Qwen 7B acreditación CNA...")
+def load_qwen_local():
+    """Carga el modelo Qwen fine-tuneado desde HuggingFace."""
+    import torch
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+
+    tokenizer = AutoTokenizer.from_pretrained(QWEN_MODEL_ID, trust_remote_code=True)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    # Detectar si hay GPU con suficiente VRAM
+    if torch.cuda.is_available():
+        gpu_mem = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+        if gpu_mem >= 14:
+            # GPU con 14+ GB: cargar en bfloat16
+            model = AutoModelForCausalLM.from_pretrained(
+                QWEN_MODEL_ID,
+                torch_dtype=torch.bfloat16,
+                device_map="auto",
+                trust_remote_code=True,
+            )
+        else:
+            # GPU con menos VRAM: cargar en 4-bit
+            try:
+                from transformers import BitsAndBytesConfig
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                    bnb_4bit_quant_type="nf4",
+                )
+                model = AutoModelForCausalLM.from_pretrained(
+                    QWEN_MODEL_ID,
+                    quantization_config=bnb_config,
+                    device_map="auto",
+                    trust_remote_code=True,
+                )
+            except ImportError:
+                model = AutoModelForCausalLM.from_pretrained(
+                    QWEN_MODEL_ID,
+                    torch_dtype=torch.float16,
+                    device_map="auto",
+                    trust_remote_code=True,
+                )
+    else:
+        # CPU: float32 (lento pero funcional)
+        model = AutoModelForCausalLM.from_pretrained(
+            QWEN_MODEL_ID,
+            torch_dtype=torch.float32,
+            device_map="cpu",
+            trust_remote_code=True,
+        )
+
+    model.eval()
+    return model, tokenizer
+
+
+def generate_qwen_response(
+    system_msg: str,
+    user_msg: str,
+    max_new_tokens: int = 1000,
+    temperature: float = 0.2,
+    top_p: float = 0.9,
+    repetition_penalty: float = 1.15,
+) -> Generator[str, None, None]:
+    """Genera respuesta con Qwen local, yield por palabras para simular streaming."""
+    import torch
+
+    try:
+        qwen_model, qwen_tokenizer = load_qwen_local()
+
+        messages = [
+            {"role": "system", "content": system_msg},
+            {"role": "user",   "content": user_msg},
+        ]
+        prompt = qwen_tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = qwen_tokenizer(prompt, return_tensors="pt").to(qwen_model.device)
+
+        with torch.no_grad():
+            output = qwen_model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=temperature > 0.01,
+                temperature=max(temperature, 0.01),
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                pad_token_id=qwen_tokenizer.eos_token_id,
+            )
+
+        response = qwen_tokenizer.decode(
+            output[0][inputs["input_ids"].shape[1]:],
+            skip_special_tokens=True,
+        )
+
+        # Simular streaming por palabras
+        words = response.split(" ")
+        for i, word in enumerate(words):
+            yield word + ("" if i == len(words) - 1 else " ")
+
+    except Exception as e:
+        yield f"⚠️ Error Qwen local: {str(e)[:200]}"
+
+
+def generate_qwen_full(
+    system_msg: str,
+    user_msg: str,
+    max_new_tokens: int = 900,
+) -> str:
+    """Genera respuesta completa con Qwen (sin streaming, para correcciones)."""
+    return "".join(generate_qwen_response(system_msg, user_msg, max_new_tokens))
 
 # ══════════════════════════════════════════════════════════════════════════════
 # M4 · MEMORIA CONVERSACIONAL
@@ -289,7 +407,6 @@ class ConversationMemory:
         if len(clean) <= self.max_turns * 2:
             return self._format(recent)
 
-        # Comprimir turnos antiguos
         old = clean[:-(self.max_turns * 2)]
         summary = self._summarize(old)
         return f"[Resumen diálogo anterior]: {summary}\n\n" + self._format(recent)
@@ -328,7 +445,7 @@ def rewrite_query(query: str, memory_ctx: str) -> dict:
     Genera variantes semánticas de la query para mejorar el recall.
     Retorna: rewritten, hyde (doc hipotético), keywords, lang.
     """
-    prompt = f"""Eres un experto en acreditación universitaria colombiana (CNA).
+    prompt_text = f"""Eres un experto en acreditación universitaria colombiana (CNA).
 
 Contexto conversacional reciente:
 {memory_ctx[-600:] if memory_ctx else 'Sin historial previo.'}
@@ -343,10 +460,28 @@ Genera un JSON con:
 
 Solo JSON sin markdown."""
 
+    # M13: Usar Qwen local si está seleccionado, sino Groq
+    if st.session_state.get("use_qwen", False):
+        try:
+            raw = generate_qwen_full(
+                "Eres un experto en acreditación CNA. Responde solo con JSON.",
+                prompt_text,
+                max_new_tokens=350,
+            )
+            data = clean_json(raw)
+            return {
+                "rewritten": data.get("rewritten", query),
+                "hyde":      data.get("hyde", ""),
+                "keywords":  data.get("keywords", []),
+                "lang":      data.get("lang", "es"),
+            }
+        except Exception:
+            return {"rewritten": query, "hyde": "", "keywords": [], "lang": "es"}
+
     try:
         r = client.chat.completions.create(
             model=FAST_MODEL,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": prompt_text}],
             temperature=0,
             max_tokens=350,
         )
@@ -410,7 +545,6 @@ def hybrid_search_rrf(
     rrf_scores: dict[str, float] = {}
     id_to_payload: dict[str, dict] = {}
 
-    # 1. Dense search por cada variante de query
     for q in query_variants:
         try:
             emb = embedder.encode([q], normalize_embeddings=True)[0]
@@ -429,7 +563,6 @@ def hybrid_search_rrf(
         except Exception:
             pass
 
-    # 2. BM25 search (solo para colección principal)
     if not use_feedback:
         bm25, bm25_texts, bm25_ids, bm25_sources = build_bm25_index()
         if bm25 is not None:
@@ -447,7 +580,6 @@ def hybrid_search_rrf(
                             "source": bm25_sources[idx],
                         }
 
-    # 3. Ordenar por RRF score
     sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:TOP_K]
     results = []
     for pid, score in sorted_ids:
@@ -470,15 +602,12 @@ def rerank_results(query: str, results: list[dict]) -> list[dict]:
     for r in results:
         base_score = r.get("rrf_score", r.get("score", 0.0))
 
-        # Boost para chunks con tablas markdown
         if "|" in r["text"] and r["text"].count("|") > 6:
             base_score += 0.003
 
-        # Boost para correcciones verificadas
         if "feedback" in r.get("source", "").lower():
             base_score += 0.005
 
-        # Boost por overlap léxico directo con la query
         q_words = set(normalize_text(query).split())
         chunk_words = set(r["text"].lower().split())
         overlap = len(q_words & chunk_words)
@@ -537,17 +666,30 @@ AGENT_PROMPTS = {
 def route_query(query: str) -> str:
     """Clasifica la query para despachar al agente correcto."""
     descriptions = "\n".join(f"- {k}: {v}" for k, v in AGENT_TYPES.items())
-    prompt = f"""Clasifica esta pregunta en exactamente una categoría:
+    prompt_text = f"""Clasifica esta pregunta en exactamente una categoría:
 {descriptions}
 
 Pregunta: {query}
 
 Responde solo con la clave (estadistica/normativa/proceso/comparacion/sintesis/general)."""
 
+    # M13: Usar Qwen local si está seleccionado
+    if st.session_state.get("use_qwen", False):
+        try:
+            raw = generate_qwen_full(
+                "Clasifica preguntas. Responde solo con una palabra.",
+                prompt_text,
+                max_new_tokens=20,
+            )
+            agent = raw.strip().lower().split()[0] if raw.strip() else "general"
+            return agent if agent in AGENT_TYPES else "general"
+        except Exception:
+            return "general"
+
     try:
         r = client.chat.completions.create(
             model=FAST_MODEL,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": prompt_text}],
             temperature=0,
             max_tokens=20,
         )
@@ -570,6 +712,19 @@ Clasifica:
 
 JSON: {{"tipo": "pregunta" o "retroalimentacion"}}"""
 
+    # M13: Usar Qwen local si está seleccionado
+    if st.session_state.get("use_qwen", False):
+        try:
+            raw = generate_qwen_full(
+                "Clasifica intenciones. Responde solo con JSON.",
+                prompt_llm,
+                max_new_tokens=50,
+            )
+            data = clean_json(raw)
+            return data.get("tipo", "pregunta")
+        except Exception:
+            return "pregunta"
+
     try:
         r = client.chat.completions.create(
             model=FAST_MODEL,
@@ -583,7 +738,7 @@ JSON: {{"tipo": "pregunta" o "retroalimentacion"}}"""
         return "pregunta"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# M6 · ANSWER AGENT v2 — CON STREAMING Y CITAS INLINE
+# M6 · ANSWER AGENT v2 — CON STREAMING Y CITAS INLINE + QWEN LOCAL
 # ══════════════════════════════════════════════════════════════════════════════
 class AnswerAgentV2:
     """
@@ -591,18 +746,12 @@ class AnswerAgentV2:
     - Prompt dinámico según tipo de agente
     - Citas inline de fuentes
     - Instrucción de no-alucinación explícita
-    - Streaming token a token
+    - Streaming token a token (Groq) o por palabras (Qwen)
+    - M13: Soporte dual Groq / Qwen local
     """
 
-    def stream(
-        self,
-        query: str,
-        context: str,
-        memory_ctx: str,
-        agent_type: str,
-        sources: list[str],
-    ) -> Generator[str, None, None]:
-
+    def _build_messages(self, query, context, memory_ctx, agent_type, sources):
+        """Construye system_msg y user_msg para ambos backends."""
         format_instr = AGENT_PROMPTS.get(agent_type, AGENT_PROMPTS["general"])
         source_list  = ", ".join(set(sources)) if sources else "documentos de acreditación"
 
@@ -626,6 +775,29 @@ CONTEXTO RECUPERADO DE DOCUMENTOS EISC:
 PREGUNTA DEL USUARIO:
 {query}"""
 
+        return system_msg, user_msg
+
+    def stream(
+        self,
+        query: str,
+        context: str,
+        memory_ctx: str,
+        agent_type: str,
+        sources: list[str],
+    ) -> Generator[str, None, None]:
+
+        system_msg, user_msg = self._build_messages(
+            query, context, memory_ctx, agent_type, sources
+        )
+
+        # M13: Despachar al backend correcto
+        if st.session_state.get("use_qwen", False):
+            yield from generate_qwen_response(system_msg, user_msg)
+        else:
+            yield from self._stream_groq(system_msg, user_msg)
+
+    def _stream_groq(self, system_msg: str, user_msg: str) -> Generator[str, None, None]:
+        """Streaming real con Groq API."""
         try:
             stream = client.chat.completions.create(
                 model=DEFAULT_MODEL,
@@ -642,13 +814,13 @@ PREGUNTA DEL USUARIO:
                 if delta:
                     yield delta
         except Exception as e:
-            yield f"⚠️ Error al generar respuesta: {str(e)[:120]}"
+            yield f"⚠️ Error Groq: {str(e)[:120]}"
 
     def generate_correction(
         self, query: str, last_answer: str, context: str
     ) -> str:
         """Genera respuesta corregida basada en retroalimentación del usuario."""
-        prompt = f"""El usuario señaló un problema con esta respuesta previa:
+        correction_prompt = f"""El usuario señaló un problema con esta respuesta previa:
 
 RESPUESTA PREVIA:
 {last_answer[:600]}
@@ -665,10 +837,17 @@ Genera una respuesta CORREGIDA que:
 3. Sea más precisa que la anterior
 4. Mantenga el mismo formato que la respuesta original"""
 
+        # M13: Usar Qwen local si está seleccionado
+        if st.session_state.get("use_qwen", False):
+            return generate_qwen_full(
+                "Eres ChatAcredita. Corrige la respuesta anterior.",
+                correction_prompt,
+            )
+
         try:
             r = client.chat.completions.create(
                 model=DEFAULT_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": correction_prompt}],
                 temperature=0.15,
                 max_tokens=900,
             )
@@ -711,6 +890,23 @@ Definiciones:
         "hallucination_risk": 0.2,
     }
 
+    # M13: Usar Qwen local si está seleccionado
+    if st.session_state.get("use_qwen", False):
+        try:
+            raw = generate_qwen_full(
+                "Evalúa respuestas RAG. Responde solo con JSON.",
+                eval_prompt,
+                max_new_tokens=150,
+            )
+            scores = clean_json(raw)
+            for k in default_scores:
+                if k not in scores or not isinstance(scores[k], (int, float)):
+                    scores[k] = default_scores[k]
+            _log_evaluation_async(query, scores)
+            return scores
+        except Exception:
+            return default_scores
+
     try:
         r = client.chat.completions.create(
             model=FAST_MODEL,
@@ -719,12 +915,10 @@ Definiciones:
             max_tokens=150,
         )
         scores = clean_json(r.choices[0].message.content)
-        # Validar que todos los campos existen y son floats
         for k in default_scores:
             if k not in scores or not isinstance(scores[k], (int, float)):
                 scores[k] = default_scores[k]
 
-        # M10: Persistir evaluación en Qdrant para análisis posterior
         _log_evaluation_async(query, scores)
         return scores
     except Exception:
@@ -748,7 +942,7 @@ def _log_evaluation_async(query: str, scores: dict):
             )],
         )
     except Exception:
-        pass  # No interrumpir si falla el logging
+        pass
 
 def quality_badge(scores: dict) -> tuple[str, str]:
     """Genera badge de calidad basado en los scores de evaluación."""
@@ -788,7 +982,6 @@ def save_feedback_dedup(
         ).points
 
         if existing and existing[0].score > 0.92:
-            # Actualizar rating promedio y contador de votos
             old = existing[0].payload
             old_rating = old.get("rating", rating)
             old_votes  = old.get("votes", 1)
@@ -805,7 +998,6 @@ def save_feedback_dedup(
             )
             return "updated"
 
-        # Crear nuevo punto de feedback
         qdrant.upsert(
             collection_name=FEEDBACK_COLLECTION,
             points=[PointStruct(
@@ -866,7 +1058,6 @@ def process_uploaded_document(pdf_bytes: bytes, filename: str) -> tuple[list, li
             is_separator_regex=False,
         )
         chunks = splitter.split_text(all_text)
-        # Filtrar chunks muy cortos o fragmentos de tabla incompletos
         valid = [
             c.strip() for c in chunks
             if len(c.strip()) > 80
@@ -882,7 +1073,7 @@ def add_chunks_to_qdrant(chunks: list[str], sources: list[str]) -> bool:
     """Sube chunks a Qdrant con embeddings paralelos."""
     try:
         normalized = [normalize_text(c) for c in chunks]
-        embeddings = embed_chunks_parallel(normalized)  # M12: paralelo
+        embeddings = embed_chunks_parallel(normalized)
 
         points = [
             PointStruct(
@@ -904,21 +1095,22 @@ def add_chunks_to_qdrant(chunks: list[str], sources: list[str]) -> bool:
     except Exception as e:
         st.error(f"❌ Error subiendo a Qdrant: {str(e)[:120]}")
         return False
-        
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SISTEMA RAG PRINCIPAL — INTEGRA TODAS LAS MEJORAS
 # ══════════════════════════════════════════════════════════════════════════════
 class RAGSystemV3:
     """
     Pipeline RAG completo con:
-    M1 Query rewriting + HyDE
-    M2 BM25 real + Dense (RRF)
-    M3 Cross-encoder reranker
-    M4 Memoria conversacional
-    M5 Router de agentes
-    M6 AnswerAgent v2 con streaming
-    M7 Evaluador RAGAS-lite
-    M9 Feedback deduplicado
+    M1  Query rewriting + HyDE
+    M2  BM25 real + Dense (RRF)
+    M3  Cross-encoder reranker
+    M4  Memoria conversacional
+    M5  Router de agentes
+    M6  AnswerAgent v2 con streaming
+    M7  Evaluador RAGAS-lite
+    M9  Feedback deduplicado
+    M13 Backend dual Groq / Qwen local
     """
 
     def __init__(self):
@@ -956,8 +1148,11 @@ class RAGSystemV3:
                     unsafe_allow_html=True,
                 )
 
+        # Indicar qué backend se usa
+        backend_label = "Qwen 7B local" if st.session_state.get("use_qwen") else "Groq"
+
         # ── ETAPA 1: Clasificar intención ──────────────────────────────────
-        show_status("status-analizando", "🧠 Analizando intención...")
+        show_status("status-analizando", f"🧠 Analizando intención ({backend_label})...")
         intent = classify_intent(query, last_answer)
         results["intent"] = intent
 
@@ -971,13 +1166,12 @@ class RAGSystemV3:
             query,
             rewrite_data["rewritten"],
             rewrite_data["hyde"],
-        } - {""})  # Eliminar cadenas vacías y duplicados
+        } - {""})
 
         # ── ETAPA 4: Retrieval híbrido RRF (M2) ───────────────────────────
         show_status("status-recuperando", "🔍 Recuperando información...")
         raw_results = hybrid_search_rrf(query, query_variants, use_feedback=False)
 
-        # Si es retroalimentación, también buscar en feedback
         if intent == "retroalimentacion":
             fb_results = hybrid_search_rrf(query, query_variants, use_feedback=True)
             raw_results = raw_results + fb_results
@@ -1001,17 +1195,15 @@ class RAGSystemV3:
                 query, last_answer, context
             )
 
-            # Guardar corrección en colección feedback (M9)
             save_feedback_dedup(
                 query=query,
                 answer=corrected_answer,
-                rating=4,  # Rating por defecto para correcciones automáticas
+                rating=4,
                 tags=["correccion_automatica"],
                 corrected=True,
             )
             results["corrected"] = True
 
-            # Evaluar calidad de la corrección (M7)
             show_status("status-evaluando", "🔬 Evaluando calidad...")
             scores = evaluate_response(query, context, corrected_answer)
             results["scores"] = scores
@@ -1021,17 +1213,17 @@ class RAGSystemV3:
                 "corrected": True,
                 "agent":     agent_type,
                 "chunks":    len(reranked),
+                "backend":   "qwen_local" if st.session_state.get("use_qwen") else "groq",
             }
 
-            # Devolver como generator de un solo elemento
             def single_token():
                 yield corrected_answer
 
             results["tokens"] = single_token()
             return results
 
-        # ── ETAPA 8: Generación con streaming real (M6 + M8) ─────────────
-        show_status("status-generando", "✍️ Generando respuesta...")
+        # ── ETAPA 8: Generación con streaming real (M6 + M8 + M13) ───────
+        show_status("status-generando", f"✍️ Generando con {backend_label}...")
         token_gen = self.answer_agent.stream(
             query=query,
             context=context,
@@ -1042,14 +1234,14 @@ class RAGSystemV3:
         results["tokens"] = token_gen
         results["context_used"] = context[:1200]
 
-        # Métricas pre-evaluación (la evaluación se hace post-streaming)
         results["metrics"] = {
-            "latency":   round(time.time() - start, 2),
-            "intent":    intent,
-            "corrected": False,
-            "agent":     agent_type,
-            "chunks":    len(reranked),
+            "latency":       round(time.time() - start, 2),
+            "intent":        intent,
+            "corrected":     False,
+            "agent":         agent_type,
+            "chunks":        len(reranked),
             "context_chars": len(context),
+            "backend":       "qwen_local" if st.session_state.get("use_qwen") else "groq",
         }
         return results
 
@@ -1087,9 +1279,10 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 for key, default in [
     ("messages",        []),
-    ("metrics",         {"latency": 0, "intent": "pregunta", "corrected": False, "agent": "general"}),
+    ("metrics",         {"latency": 0, "intent": "pregunta", "corrected": False, "agent": "general", "backend": "groq"}),
     ("last_scores",     {}),
-    ("pending_feedback", None),  # Guarda la última respuesta para feedback
+    ("pending_feedback", None),
+    ("use_qwen",        False),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -1107,9 +1300,46 @@ for i, m in enumerate(st.session_state.messages):
 st.markdown('<div id="bottom"></div>', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SIDEBAR: Subir documento + métricas + feedback
+# SIDEBAR: Selector de modelo + Subir documento + métricas + feedback
 # ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
+    # ── M13: Selector de backend LLM ─────────────────────────────────────
+    st.markdown("### 🤖 Modelo LLM")
+
+    backend_options = []
+    if groq_available:
+        backend_options.append("☁️ Groq — Llama 3.3 70B")
+    backend_options.append("🖥️ Qwen 7B local — acreditación CNA")
+
+    llm_backend = st.selectbox(
+        "Selecciona el backend de generación:",
+        backend_options,
+        key="llm_backend_selector",
+        help="Groq es más rápido (API cloud). Qwen 7B es tu modelo fine-tuneado local.",
+    )
+
+    st.session_state.use_qwen = "Qwen" in llm_backend
+
+    if st.session_state.use_qwen:
+        import torch
+        with st.spinner("Cargando Qwen 7B..."):
+            try:
+                qwen_model, qwen_tokenizer = load_qwen_local()
+                device_info = "CUDA" if torch.cuda.is_available() else "CPU"
+                st.success(f"✅ Qwen 7B acreditación ({device_info})")
+            except Exception as e:
+                st.error(f"❌ Error cargando Qwen: {str(e)[:100]}")
+                st.session_state.use_qwen = False
+    else:
+        if groq_available:
+            st.info(f"Usando Groq: {DEFAULT_MODEL}")
+        else:
+            st.warning("Groq no disponible, se usará Qwen local")
+            st.session_state.use_qwen = True
+
+    st.markdown("---")
+
+    # ── Subir documento ──────────────────────────────────────────────────
     st.markdown("### 📁 Subir Documento")
     uploaded_file = st.file_uploader(
         "PDF sobre acreditación",
@@ -1125,7 +1355,6 @@ with st.sidebar:
             if chunks:
                 st.success(f"✅ {len(chunks)} chunks extraídos de '{uploaded_file.name}'")
 
-                # Mostrar preview de lo extraído
                 with st.expander("👁️ Preview de los primeros 3 chunks", expanded=False):
                     for i, c in enumerate(chunks[:3]):
                         st.caption(f"Chunk {i+1} ({len(c)} chars)")
@@ -1133,11 +1362,9 @@ with st.sidebar:
 
                 with st.spinner("Generando embeddings y subiendo a Qdrant..."):
                     if add_chunks_to_qdrant(chunks, sources):
-                        # Invalidar caché BM25 para reflejar nuevo contenido
                         build_bm25_index.clear()
                         st.balloons()
 
-                        # Verificación post-indexación
                         try:
                             col_info = qdrant.get_collection(COLLECTION_NAME)
                             st.info(
@@ -1170,11 +1397,12 @@ with st.sidebar:
 
     st.markdown("### 📊 Métricas de sesión")
     metrics = st.session_state.metrics
-    st.metric("⏱️ Latencia",     f"{metrics.get('latency', 0)} s")
-    st.metric("🤖 Agente",       metrics.get('agent', 'general').capitalize())
-    st.metric("🔍 Intención",    metrics.get('intent', 'pregunta').capitalize())
+    st.metric("⏱️ Latencia",      f"{metrics.get('latency', 0)} s")
+    st.metric("🤖 Backend",       metrics.get('backend', 'groq').upper())
+    st.metric("🎯 Agente",        metrics.get('agent', 'general').capitalize())
+    st.metric("🔍 Intención",     metrics.get('intent', 'pregunta').capitalize())
     st.metric("📚 Chunks usados", metrics.get('chunks', 0))
-    st.metric("👥 Visitas",       st.session_state.visits)
+    st.metric("👥 Visitas",        st.session_state.visits)
 
     # Scores de calidad de la última respuesta
     if st.session_state.last_scores:
@@ -1198,7 +1426,6 @@ with st.sidebar:
     # ══════════════════════════════════════════════════════════════════════
     st.markdown("---")
     with st.expander("🔧 Diagnóstico del índice", expanded=False):
-        # --- Estadísticas generales de la colección ---
         try:
             col_info = qdrant.get_collection(COLLECTION_NAME)
             total_points = col_info.points_count
@@ -1210,7 +1437,6 @@ with st.sidebar:
                     "indexado. Sube un PDF y presiona 'Procesar e Indexar'."
                 )
             else:
-                # --- Listar fuentes (documentos) indexados ---
                 st.markdown("**Documentos indexados:**")
                 sources_found = set()
                 offset_diag = None
@@ -1238,7 +1464,6 @@ with st.sidebar:
                 else:
                     st.caption("Sin fuentes identificadas")
 
-                # --- Búsqueda de prueba manual ---
                 st.markdown("**Probar búsqueda:**")
                 test_query = st.text_input(
                     "Escribe una consulta de prueba",
@@ -1272,7 +1497,6 @@ with st.sidebar:
                                     st.caption(text)
                                     st.markdown("---")
 
-                                # Diagnóstico del score
                                 best = hits[0].score
                                 if best < 0.3:
                                     st.error(
@@ -1294,7 +1518,6 @@ with st.sidebar:
                         except Exception as e:
                             st.error(f"Error en búsqueda: {str(e)[:100]}")
 
-                # --- Ver muestra de chunks ---
                 if st.checkbox("Ver muestra de chunks almacenados", key="diag_sample"):
                     try:
                         sample = qdrant.scroll(
@@ -1353,10 +1576,11 @@ if prompt:
     )
 
     # ── M8: Streaming de respuesta ──────────────────────────────────────────
+    backend_label = "Qwen 7B" if st.session_state.get("use_qwen") else "Groq"
     status_ph.markdown(
         f'<div class="thinking-avatar status-generando">'
         f'{"<img src=data:image/webp;base64," + avatar_b64 + " class=avatar-img>" if avatar_b64 else ""}'
-        f'<span>✍️ Generando respuesta...</span></div>',
+        f'<span>✍️ Generando con {backend_label}...</span></div>',
         unsafe_allow_html=True,
     )
 
@@ -1364,7 +1588,6 @@ if prompt:
     with st.chat_message("assistant"):
         stream_placeholder = st.empty()
 
-        # Corrección: mostrar directamente sin streaming visual
         if rag_result["corrected"]:
             for token in rag_result["tokens"]:
                 full_answer += token
@@ -1374,14 +1597,12 @@ if prompt:
             )
             stream_placeholder.markdown(full_answer)
         else:
-            # Streaming token a token con cursor parpadeante
             for token in rag_result["tokens"]:
                 full_answer += token
                 stream_placeholder.markdown(full_answer + "▌")
-            stream_placeholder.markdown(full_answer)  # Versión final sin cursor
+            stream_placeholder.markdown(full_answer)
 
         # ── M7: Evaluar calidad (post-streaming) ───────────────────────────
-        # Reusar contexto ya recuperado — no hacer búsqueda extra
         context_for_eval = rag_result.get("context_used", full_answer[:1200])
         status_ph.markdown(
             f'<div class="thinking-avatar status-evaluando">'
@@ -1394,13 +1615,11 @@ if prompt:
 
         badge_label, badge_class = quality_badge(scores)
 
-        # Mostrar badge de calidad
         st.markdown(
             f'<span class="quality-badge {badge_class}">🔬 {badge_label}</span>',
             unsafe_allow_html=True,
         )
 
-        # Advertencia si el riesgo de alucinación es alto
         if scores.get("hallucination_risk", 0) > HALLUCINATION_THRESHOLD:
             st.warning(
                 "⚠️ Esta respuesta podría contener información no verificada. "
@@ -1417,8 +1636,10 @@ if prompt:
             )
             st.markdown(badges, unsafe_allow_html=True)
             agent_type = rag_result.get("agent_type", "general")
+            backend_info = rag_result["metrics"].get("backend", "groq")
             st.caption(
                 f"Agente: {agent_type} · "
+                f"Backend: {backend_info} · "
                 f"Chunks: {rag_result['metrics'].get('chunks', 0)} · "
                 f"Latencia: {rag_result['metrics'].get('latency', 0)}s"
             )
@@ -1460,8 +1681,8 @@ if prompt:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="footer">
-    Universidad del Valle · Grupo GUIA · ChatAcredita PRO v3.0<br>
-    RAG + Agentes + Retroalimentación Vectorial · EISC 2025
+    Universidad del Valle · Grupo GUIA · ChatAcredita PRO v3.1<br>
+    RAG + Agentes + Qwen 7B local + Retroalimentación Vectorial · EISC 2025
 </div>
 """, unsafe_allow_html=True)
 
@@ -1471,34 +1692,28 @@ st.markdown("""
 st.markdown("""
 <script>
 function scrollToBottom() {
-    // Estrategia 1: Scroll del contenedor principal de Streamlit
     const mainSection = window.parent.document.querySelector('section.main');
     if (mainSection) {
         mainSection.scrollTop = mainSection.scrollHeight;
     }
 
-    // Estrategia 2: Scroll del último mensaje del chat
     const msgs = window.parent.document.querySelectorAll('[data-testid="stChatMessage"]');
     if (msgs.length > 0) {
         msgs[msgs.length - 1].scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
 
-    // Estrategia 3: Scroll del contenedor de chat
     const chatContainer = window.parent.document.querySelector('[data-testid="stChatMessageContainer"]');
     if (chatContainer) {
         chatContainer.scrollTop = chatContainer.scrollHeight;
     }
 
-    // Estrategia 4: Scroll de cualquier contenedor con overflow
     const containers = window.parent.document.querySelectorAll('.main .block-container, [data-testid="stVerticalBlock"]');
     containers.forEach(c => { c.scrollTop = c.scrollHeight; });
 }
 
-// Ejecutar inmediatamente y con delays progresivos
 scrollToBottom();
 [100, 300, 600, 1000, 1500, 2000, 3000, 5000].forEach(d => setTimeout(scrollToBottom, d));
 
-// MutationObserver: detecta cuando se agrega contenido nuevo al DOM
 try {
     const targetNode = window.parent.document.querySelector('section.main') ||
                        window.parent.document.querySelector('[data-testid="stAppViewContainer"]');
@@ -1507,7 +1722,6 @@ try {
             setTimeout(scrollToBottom, 100);
         });
         observer.observe(targetNode, { childList: true, subtree: true });
-        // Auto-desconectar después de 30 segundos para no desperdiciar recursos
         setTimeout(() => observer.disconnect(), 30000);
     }
 } catch(e) {}
