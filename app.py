@@ -267,7 +267,8 @@ st.sidebar.success("✅ Embeddings + Reranker: BGE-M3 (1024d)")
 # ─────────────────────────────────────────────
 QWEN_MODEL_ID = "raulgdp/qwen2.5-7b-acredita-cna-col"
 
-@st.cache_resource(show_spinner="🤖 Cargando Qwen 7B acreditación CNA...", experimental_allow_widgets=True)
+# ✅ CORREGIDO (compatible con Streamlit ≥1.20)
+@st.cache_resource(show_spinner="🤖 Cargando Qwen 7B acreditación CNA...")
 def load_qwen_local():
     import torch
     from transformers import AutoTokenizer, AutoModelForCausalLM
