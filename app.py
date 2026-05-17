@@ -1,4 +1,4 @@
-﻿# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  ChatAcredita PRO v3.1 — RAG + Agentes + Retroalimentación Vectorial      ║
 # ║  EISC — Universidad del Valle, Cali, Colombia                             ║
 # ║  CORRECCIONES: Espacios eliminados, total_memory, device_map limpio,      ║
@@ -264,7 +264,8 @@ st.sidebar.success("✅ Embeddings + Reranker: BGE-M3 (1024d)")
 # ─────────────────────────────────────────────
 # M13 · BACKEND LOCAL: Qwen 2.5-7B fine-tuneado para acreditación CNA
 # ─────────────────────────────────────────────
-QWEN_MODEL_ID = "raulgdp/qwen2.5-7b-acredita-cna-col"
+QWEN_MODEL_ID     = "raulgdp/qwen2.5-7b-acredita-cna-col"
+DEEPSEEK_MODEL_ID = "raulgdp/deepseek14b-acredita"
 
 @st.cache_resource(show_spinner="🤖 Cargando Qwen 7B acreditación CNA...")
 def load_qwen_local():
@@ -369,6 +370,116 @@ def generate_qwen_full(
     return "".join(generate_qwen_response(system_msg, user_msg, max_new_tokens))
 
 # ─────────────────────────────────────────────
+# DEEPSEEK 14B — fine-tuneado acreditación CNA (raulgdp/deepseek14b-acredita)
+# ─────────────────────────────────────────────
+@st.cache_resource(show_spinner="🤖 Cargando DeepSeek 14B acreditación CNA...")
+def load_deepseek_local():
+    import torch
+    from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+
+    tokenizer = AutoTokenizer.from_pretrained(DEEPSEEK_MODEL_ID, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
+
+    if torch.cuda.is_available():
+        # 14B merged en fp16 = 27 GB → siempre cargar en 4-bit en GPU
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            DEEPSEEK_MODEL_ID,
+            quantization_config=bnb_config,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            DEEPSEEK_MODEL_ID,
+            torch_dtype=torch.float32,
+            device_map="cpu",
+            trust_remote_code=True,
+        )
+
+    model.eval()
+    return model, tokenizer
+
+
+def generate_deepseek_response(
+    system_msg: str,
+    user_msg: str,
+    max_new_tokens: int = 1000,
+    temperature: float = 0.2,
+    top_p: float = 0.9,
+    repetition_penalty: float = 1.15,
+) -> Generator[str, None, None]:
+    import torch
+    try:
+        ds_model, ds_tokenizer = load_deepseek_local()
+        messages = [
+            {"role": "system", "content": system_msg},
+            {"role": "user",   "content": user_msg},
+        ]
+        prompt = ds_tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = ds_tokenizer(prompt, return_tensors="pt").to(ds_model.device)
+
+        with torch.no_grad():
+            output = ds_model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=temperature > 0.01,
+                temperature=max(temperature, 0.01),
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                pad_token_id=ds_tokenizer.eos_token_id,
+            )
+
+        response = ds_tokenizer.decode(
+            output[0][inputs["input_ids"].shape[1]:],
+            skip_special_tokens=True,
+        )
+        for word in response.split(" "):
+            yield word + " "
+
+    except Exception as e:
+        import traceback
+        print(f"🔥 ERROR DeepSeek: {traceback.format_exc()}")
+        yield f"⚠️ Error DeepSeek 14B: {str(e)[:200]}"
+
+
+def generate_deepseek_full(
+    system_msg: str,
+    user_msg: str,
+    max_new_tokens: int = 900,
+) -> str:
+    return "".join(generate_deepseek_response(system_msg, user_msg, max_new_tokens))
+
+
+def _is_deepseek() -> bool:
+    return st.session_state.get("use_deepseek", False)
+
+def _is_qwen() -> bool:
+    return st.session_state.get("use_qwen", False) and not st.session_state.get("use_deepseek", False)
+
+def _local_generate_response(system_msg, user_msg, max_new_tokens=1000) -> Generator[str, None, None]:
+    """Despacha al backend local seleccionado (Qwen o DeepSeek)."""
+    if _is_deepseek():
+        yield from generate_deepseek_response(system_msg, user_msg, max_new_tokens)
+    else:
+        yield from generate_qwen_response(system_msg, user_msg, max_new_tokens)
+
+def _local_generate_full(system_msg, user_msg, max_new_tokens=900) -> str:
+    """Genera respuesta completa con el backend local seleccionado."""
+    if _is_deepseek():
+        return generate_deepseek_full(system_msg, user_msg, max_new_tokens)
+    return generate_qwen_full(system_msg, user_msg, max_new_tokens)
+
+# ─────────────────────────────────────────────
 # M4 · MEMORIA CONVERSACIONAL
 # ─────────────────────────────────────────────
 class ConversationMemory:
@@ -422,9 +533,9 @@ Genera un JSON con:
 "lang": idioma detectado "es" o "en" (string)
 Solo JSON sin markdown."""
     
-    if st.session_state.get("use_qwen", False):
+    if _is_qwen() or _is_deepseek():
         try:
-            raw = generate_qwen_full("Eres un experto en acreditación CNA. Responde solo con JSON.", prompt_text, max_new_tokens=350)
+            raw = _local_generate_full("Eres un experto en acreditación CNA. Responde solo con JSON.", prompt_text, max_new_tokens=350)
             data = clean_json(raw)
             return {"rewritten": data.get("rewritten", query), "hyde": data.get("hyde", ""), "keywords": data.get("keywords", []), "lang": data.get("lang", "es")}
         except Exception:
@@ -548,9 +659,9 @@ def route_query(query: str) -> str:
 Pregunta: {query}
 Responde solo con la clave (estadistica/normativa/proceso/comparacion/sintesis/general)."""
     
-    if st.session_state.get("use_qwen", False):
+    if _is_qwen() or _is_deepseek():
         try:
-            raw = generate_qwen_full("Clasifica preguntas. Responde solo con una palabra.", prompt_text, max_new_tokens=20)
+            raw = _local_generate_full("Clasifica preguntas. Responde solo con una palabra.", prompt_text, max_new_tokens=20)
             agent = raw.strip().lower().split()[0] if raw.strip() else "general"
             return agent if agent in AGENT_TYPES else "general"
         except Exception:
@@ -572,9 +683,9 @@ Clasifica:
 "retroalimentacion" si el usuario corrige, mejora o complementa la respuesta anterior
 JSON: {{"tipo": "pregunta" o "retroalimentacion"}}"""
     
-    if st.session_state.get("use_qwen", False):
+    if _is_qwen() or _is_deepseek():
         try:
-            raw = generate_qwen_full("Clasifica intenciones. Responde solo con JSON.", prompt_llm, max_new_tokens=50)
+            raw = _local_generate_full("Clasifica intenciones. Responde solo con JSON.", prompt_llm, max_new_tokens=50)
             data = clean_json(raw)
             return data.get("tipo", "pregunta")
         except Exception:
@@ -611,8 +722,8 @@ PREGUNTA DEL USUARIO:
 
     def stream(self, query: str, context: str, memory_ctx: str, agent_type: str, sources: list[str]) -> Generator[str, None, None]:
         system_msg, user_msg = self._build_messages(query, context, memory_ctx, agent_type, sources)
-        if st.session_state.get("use_qwen", False):
-            yield from generate_qwen_response(system_msg, user_msg)
+        if _is_qwen() or _is_deepseek():
+            yield from _local_generate_response(system_msg, user_msg)
         else:
             yield from self._stream_groq(system_msg, user_msg)
 
@@ -637,8 +748,8 @@ RETROALIMENTACIÓN/CORRECCIÓN DEL USUARIO: {query}
 CONTEXTO DOCUMENTAL ACTUALIZADO: {context}
 Genera una respuesta CORREGIDA que:
 Integre la corrección del usuario. Use solo información del contexto documental. Sea más precisa que la anterior."""
-        if st.session_state.get("use_qwen", False):
-            return generate_qwen_full("Eres ChatAcredita. Corrige la respuesta anterior.", correction_prompt)
+        if _is_qwen() or _is_deepseek():
+            return _local_generate_full("Eres ChatAcredita. Corrige la respuesta anterior.", correction_prompt)
         try:
             r = client.chat.completions.create(model=DEFAULT_MODEL, messages=[{"role": "user", "content": correction_prompt}], temperature=0.15, max_tokens=900)
             return r.choices[0].message.content
@@ -658,9 +769,9 @@ Evalúa en escala 0.0 a 1.0 y responde SOLO con JSON:
     
     default_scores = {"faithfulness": 0.8, "answer_relevance": 0.8, "context_precision": 0.7, "hallucination_risk": 0.2}
     
-    if st.session_state.get("use_qwen", False):
+    if _is_qwen() or _is_deepseek():
         try:
-            raw = generate_qwen_full("Evalúa respuestas RAG. Responde solo con JSON.", eval_prompt, max_new_tokens=150)
+            raw = _local_generate_full("Evalúa respuestas RAG. Responde solo con JSON.", eval_prompt, max_new_tokens=150)
             scores = clean_json(raw)
             for k in default_scores:
                 if k not in scores or not isinstance(scores[k], (int, float)):
@@ -818,7 +929,7 @@ class RAGSystemV3:
                 img_tag = f'<img src="data:image/webp;base64,{avatar_b64}" class="avatar-img">' if avatar_b64 else ""
                 status_placeholder.markdown(f'<div class="thinking-avatar {css_class}">{img_tag} <span>{text}</span></div>', unsafe_allow_html=True)
 
-        backend_label = "Qwen 7B local" if st.session_state.get("use_qwen") else "Groq"
+        backend_label = "DeepSeek 14B" if _is_deepseek() else ("Qwen 7B" if _is_qwen() else "Groq")
         show_status("status-analizando", f"🧠 Analizando intención ({backend_label})...")
         intent = classify_intent(query, last_answer)
         results["intent"] = intent
@@ -847,7 +958,7 @@ class RAGSystemV3:
             show_status("status-evaluando", "🔬 Evaluando calidad...")
             scores = evaluate_response(query, context, corrected_answer)
             results["scores"] = scores
-            results["metrics"] = {"latency": round(time.time() - start, 2), "intent": intent, "corrected": True, "agent": agent_type, "chunks": len(reranked), "backend": "qwen_local" if st.session_state.get("use_qwen") else "groq"}
+            results["metrics"] = {"latency": round(time.time() - start, 2), "intent": intent, "corrected": True, "agent": agent_type, "chunks": len(reranked), "backend": "deepseek14b" if _is_deepseek() else ("qwen_local" if _is_qwen() else "groq")}
             def single_token(): yield corrected_answer
             results["tokens"] = single_token()
             return results
@@ -856,7 +967,7 @@ class RAGSystemV3:
         token_gen = self.answer_agent.stream(query=query, context=context, memory_ctx=memory_ctx, agent_type=agent_type, sources=sources)
         results["tokens"] = token_gen
         results["context_used"] = context[:1200]
-        results["metrics"] = {"latency": round(time.time() - start, 2), "intent": intent, "corrected": False, "agent": agent_type, "chunks": len(reranked), "context_chars": len(context), "backend": "qwen_local" if st.session_state.get("use_qwen") else "groq"}
+        results["metrics"] = {"latency": round(time.time() - start, 2), "intent": intent, "corrected": False, "agent": agent_type, "chunks": len(reranked), "context_chars": len(context), "backend": "deepseek14b" if _is_deepseek() else ("qwen_local" if _is_qwen() else "groq")}
         return results
 
 rag_system = RAGSystemV3()
@@ -896,7 +1007,8 @@ for key, default in [
     ("last_scores", {}),
     ("pending_feedback", None),
     ("use_qwen", False),
-    ("user", "invitado"),  # ✅ AÑADIDO para evitar KeyError
+    ("use_deepseek", False),
+    ("user", "invitado"),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -916,11 +1028,30 @@ with st.sidebar:
     if groq_available:
         backend_options.append("☁️ Groq — Llama 3.3 70B")
     backend_options.append("🖥️ Qwen 7B local — acreditación CNA")
-    
-    llm_backend = st.selectbox("Selecciona el backend de generación:", backend_options, key="llm_backend_selector", help="Groq es más rápido (API cloud). Qwen 7B es tu modelo fine-tuneado local.")
-    st.session_state.use_qwen = "Qwen" in llm_backend
-    
-    if st.session_state.use_qwen:
+    backend_options.append("🧠 DeepSeek 14B — acreditación CNA (mejor calidad)")
+
+    llm_backend = st.selectbox(
+        "Selecciona el backend de generación:", backend_options,
+        key="llm_backend_selector",
+        help="Groq: rápido (API cloud). Qwen 7B: local fine-tuneado. DeepSeek 14B: mayor calidad, más lento.",
+    )
+
+    # Actualizar flags de sesión
+    st.session_state.use_qwen     = "Qwen" in llm_backend
+    st.session_state.use_deepseek = "DeepSeek" in llm_backend
+
+    if st.session_state.use_deepseek:
+        import torch
+        with st.spinner("Cargando DeepSeek 14B acreditación CNA..."):
+            try:
+                ds_model, ds_tokenizer = load_deepseek_local()
+                device_info = "CUDA" if torch.cuda.is_available() else "CPU"
+                st.success(f"✅ DeepSeek 14B acreditación ({device_info})")
+            except Exception as e:
+                st.error(f"❌ Error cargando DeepSeek: {str(e)[:100]}")
+                st.session_state.use_deepseek = False
+
+    elif st.session_state.use_qwen:
         import torch
         with st.spinner("Cargando Qwen 7B..."):
             try:
@@ -1084,9 +1215,12 @@ if prompt:
     status_ph = st.empty()
     rag_result = rag_system.run_stream(query=prompt_clean, messages=st.session_state.messages, last_answer=last_answer, status_placeholder=status_ph)
     
-    backend_label = "Qwen 7B" if st.session_state.get("use_qwen") else "Groq"
-    status_ph.markdown(f'<div class="thinking-avatar status-generando">{"<img src=\"data:image/webp;base64,\" + avatar_b64 + \" class=avatar-img>" if avatar_b64 else ""} <span>✍️ Generando con {backend_label}...</span></div>', unsafe_allow_html=True)
-    
+    backend_label = "DeepSeek 14B" if _is_deepseek() else ("Qwen 7B" if _is_qwen() else "Groq")
+    img_tag = f'<img src="data:image/webp;base64,{avatar_b64}" class="avatar-img">' if avatar_b64 else ""
+    status_ph.markdown(
+    f'<div class="thinking-avatar status-generando">{img_tag} <span>✍️ Generando con {backend_label}...</span></div>',
+    unsafe_allow_html=True,
+    )
     full_answer = ""
     with st.chat_message("assistant"):
         stream_placeholder = st.empty()
