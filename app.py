@@ -377,13 +377,23 @@ def load_deepseek_local():
     import torch
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
+    # 🛡️ LIMPIAR cualquier configuración previa de dispositivo que cause conflicto
+    if hasattr(torch, 'set_default_device'):
+        try:
+            torch.set_default_device('cpu')
+        except Exception:
+            pass
+    
+    # 🛡️ Resetear el device por defecto de torch
+    torch.cuda.set_device(0) if torch.cuda.is_available() else None
+
     tokenizer = AutoTokenizer.from_pretrained(DEEPSEEK_MODEL_ID, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
     if torch.cuda.is_available():
-        # 14B merged en fp16 = 27 GB → siempre cargar en 4-bit en GPU
+        # GPU: usar device_map="auto" con precauciones
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
@@ -393,18 +403,19 @@ def load_deepseek_local():
         model = AutoModelForCausalLM.from_pretrained(
             DEEPSEEK_MODEL_ID,
             quantization_config=bnb_config,
-            device_map="auto",           # ✅ Válido: solo aquí, sin .to() después
+            device_map="auto",
             trust_remote_code=True,
+            # Evitar conflictos con torch.compile o context managers
+            torch_dtype=torch.bfloat16,
         )
     else:
-        # CPU: NO usar device_map, NO usar .to()
+        # CPU: cargar sin device_map, sin .to(), sin set_default_device
         model = AutoModelForCausalLM.from_pretrained(
             DEEPSEEK_MODEL_ID,
             torch_dtype=torch.float32,
             trust_remote_code=True,
-            low_cpu_mem_usage=True,      # Reduce uso de RAM
+            low_cpu_mem_usage=True,
         )
-        # model = model.to("cpu")  # ❌ NO hacer esto con device_map
 
     model.eval()
     return model, tokenizer
@@ -430,12 +441,16 @@ def generate_deepseek_response(
         )
         inputs = ds_tokenizer(prompt, return_tensors="pt")
         
-        # ✅ Solo mover a device si NO se usó device_map="auto"
-        # Con device_map="auto", el modelo ya está en GPU automáticamente
-        if not torch.cuda.is_available():
+        # ✅ Detectar si el modelo usa device_map (tiene hf_device_map) o está en CPU
+        if hasattr(ds_model, 'hf_device_map'):
+            # Modelo con device_map="auto": los inputs deben estar en el mismo 
+            # dispositivo que la primera capa del modelo (generalmente cuda:0)
+            first_device = next(iter(ds_model.hf_device_map.values()))
+            inputs = {k: v.to(first_device) for k, v in inputs.items()}
+        elif torch.cuda.is_available():
+            inputs = {k: v.to("cuda") for k, v in inputs.items()}
+        else:
             inputs = {k: v.to("cpu") for k, v in inputs.items()}
-        elif not hasattr(ds_model, 'hf_device_map'):
-            inputs = {k: v.to(ds_model.device) for k, v in inputs.items()}
 
         with torch.no_grad():
             output = ds_model.generate(
