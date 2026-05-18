@@ -1,7 +1,8 @@
 ﻿# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  ChatAcredita PRO v3.2 — RAG + Agentes + Retroalimentación Vectorial      ║
+# ║  ChatAcredita PRO v3.1 — RAG + Agentes + Retroalimentación Vectorial      ║
 # ║  EISC — Universidad del Valle, Cali, Colombia                             ║
-# ║  CORRECCIONES: DeepSeek device_map robusto, error handling mejorado       ║
+# ║  CORRECCIONES: Espacios eliminados, total_memory, device_map limpio,      ║
+# ║  dict keys limpios, cache_resource compatible, do_sample=True para Instruct ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 import streamlit as st
 import os
@@ -15,7 +16,6 @@ import re
 import tempfile
 import asyncio
 import concurrent.futures
-import traceback
 from collections import defaultdict
 from datetime import datetime
 from typing import Generator, Optional
@@ -30,17 +30,7 @@ import pymupdf4llm
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # ─────────────────────────────────────────────
-# DIAGNÓSTICO GLOBAL — Capturar errores de import
-# ─────────────────────────────────────────────
-_IMPORT_ERRORS = []
-try:
-    import torch
-except Exception as e:
-    _IMPORT_ERRORS.append(f"torch: {e}")
-    torch = None
-
-# ─────────────────────────────────────────────
-# M11 · SEGURIDAD
+# M11 · SEGURIDAD — Contraseñas hasheadas + rate limiting
 # ─────────────────────────────────────────────
 USERS_HASHED = {
     "admin": hashlib.sha256("1234".encode()).hexdigest(),
@@ -100,7 +90,7 @@ if not st.session_state.auth:
 # CONFIGURACIÓN GLOBAL
 # ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="ChatAcredita PRO v3.2 - EISC-Univalle",
+    page_title="ChatAcredita PRO v3.1 - EISC-Univalle",
     page_icon="🎓",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -216,13 +206,13 @@ header {visibility: hidden;}
 
 st.markdown("""
 <div class="custom-header">
-🎓 ChatAcredita PRO v3.2 — EISC (Universidad del Valle)
+🎓 ChatAcredita PRO v3.1 — EISC (Universidad del Valle)
 &nbsp;·&nbsp; RAG + Agentes + Qwen 7B local
 </div>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# CONEXIÓN APIs — Groq
+# CONEXIÓN APIs — Groq (Llama 3.3 70B)
 # ─────────────────────────────────────────────
 OPENAI_API_KEY  = get_secret("OPENAI_API_KEY", "").strip()
 OPENAI_API_BASE = "https://api.groq.com/openai/v1"
@@ -272,10 +262,9 @@ embedder = load_embedder()
 st.sidebar.success("✅ Embeddings + Reranker: BGE-M3 (1024d)")
 
 # ─────────────────────────────────────────────
-# M13 · BACKEND LOCAL: Qwen 2.5-7B
+# M13 · BACKEND LOCAL: Qwen 2.5-7B fine-tuneado para acreditación CNA
 # ─────────────────────────────────────────────
-QWEN_MODEL_ID     = "raulgdp/qwen2.5-7b-acredita-cna-col"
-DEEPSEEK_MODEL_ID = "raulgdp/deepseek14b-acredita"
+QWEN_MODEL_ID = "raulgdp/qwen2.5-7b-acredita-cna-col"
 
 @st.cache_resource(show_spinner="🤖 Cargando Qwen 7B acreditación CNA...")
 def load_qwen_local():
@@ -368,6 +357,7 @@ def generate_qwen_response(
         for word in response.split(" "):
             yield word + " "
     except Exception as e:
+        import traceback
         print(f"🔥 ERROR Qwen: {traceback.format_exc()}")
         yield f"⚠️ Error Qwen local: {str(e)[:200]}"
 
@@ -377,145 +367,6 @@ def generate_qwen_full(
     max_new_tokens: int = 900,
 ) -> str:
     return "".join(generate_qwen_response(system_msg, user_msg, max_new_tokens))
-
-# ─────────────────────────────────────────────
-# DEEPSEEK 14B — VERSIÓN ROBUSTA CON MANEJO DE ERRORES
-# ─────────────────────────────────────────────
-_deepseek_load_error = None
-
-@st.cache_resource(show_spinner="🤖 Cargando DeepSeek 14B acreditación CNA...")
-def load_deepseek_local():
-    global _deepseek_load_error
-    _deepseek_load_error = None
-    
-    # 🛡️ Verificar que torch está disponible
-    if torch is None:
-        _deepseek_load_error = "PyTorch no está instalado o falló la importación"
-        raise RuntimeError(_deepseek_load_error)
-    
-    from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(DEEPSEEK_MODEL_ID, trust_remote_code=True)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.padding_side = "left"
-    except Exception as e:
-        _deepseek_load_error = f"Error cargando tokenizer: {str(e)}"
-        raise RuntimeError(_deepseek_load_error)
-
-    try:
-        if torch.cuda.is_available():
-            # GPU: usar 4-bit quantization
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True,
-            )
-            model = AutoModelForCausalLM.from_pretrained(
-                DEEPSEEK_MODEL_ID,
-                quantization_config=bnb_config,
-                device_map="auto",
-                trust_remote_code=True,
-            )
-        else:
-            # CPU: SIN device_map, SIN quantization
-            model = AutoModelForCausalLM.from_pretrained(
-                DEEPSEEK_MODEL_ID,
-                torch_dtype=torch.float32,
-                trust_remote_code=True,
-                low_cpu_mem_usage=True,
-            )
-        
-        model.eval()
-        return model, tokenizer
-        
-    except Exception as e:
-        _deepseek_load_error = f"Error cargando modelo: {str(e)}\n{traceback.format_exc()}"
-        raise RuntimeError(_deepseek_load_error)
-
-
-def generate_deepseek_response(
-    system_msg: str,
-    user_msg: str,
-    max_new_tokens: int = 1000,
-    temperature: float = 0.2,
-    top_p: float = 0.9,
-    repetition_penalty: float = 1.15,
-) -> Generator[str, None, None]:
-    try:
-        ds_model, ds_tokenizer = load_deepseek_local()
-        
-        messages = [
-            {"role": "system", "content": system_msg},
-            {"role": "user",   "content": user_msg},
-        ]
-        prompt = ds_tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        inputs = ds_tokenizer(prompt, return_tensors="pt")
-        
-        # ✅ Mover inputs al dispositivo correcto
-        if torch.cuda.is_available():
-            if hasattr(ds_model, 'hf_device_map'):
-                first_device = next(iter(ds_model.hf_device_map.values()))
-                inputs = {k: v.to(first_device) for k, v in inputs.items()}
-            else:
-                inputs = {k: v.to("cuda") for k, v in inputs.items()}
-        else:
-            inputs = {k: v.to("cpu") for k, v in inputs.items()}
-
-        with torch.no_grad():
-            output = ds_model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=temperature > 0.01,
-                temperature=max(temperature, 0.01),
-                top_p=top_p,
-                repetition_penalty=repetition_penalty,
-                pad_token_id=ds_tokenizer.eos_token_id,
-            )
-
-        response = ds_tokenizer.decode(
-            output[0][inputs["input_ids"].shape[1]:],
-            skip_special_tokens=True,
-        )
-        for word in response.split(" "):
-            yield word + " "
-
-    except Exception as e:
-        error_detail = traceback.format_exc()
-        print(f"🔥 ERROR DeepSeek: {error_detail}")
-        yield f"⚠️ Error DeepSeek 14B: {str(e)[:200]}"
-
-
-def generate_deepseek_full(
-    system_msg: str,
-    user_msg: str,
-    max_new_tokens: int = 900,
-) -> str:
-    return "".join(generate_deepseek_response(system_msg, user_msg, max_new_tokens))
-
-
-def _is_deepseek() -> bool:
-    return st.session_state.get("use_deepseek", False)
-
-def _is_qwen() -> bool:
-    return st.session_state.get("use_qwen", False) and not st.session_state.get("use_deepseek", False)
-
-def _local_generate_response(system_msg, user_msg, max_new_tokens=1000) -> Generator[str, None, None]:
-    """Despacha al backend local seleccionado (Qwen o DeepSeek)."""
-    if _is_deepseek():
-        yield from generate_deepseek_response(system_msg, user_msg, max_new_tokens)
-    else:
-        yield from generate_qwen_response(system_msg, user_msg, max_new_tokens)
-
-def _local_generate_full(system_msg, user_msg, max_new_tokens=900) -> str:
-    """Genera respuesta completa con el backend local seleccionado."""
-    if _is_deepseek():
-        return generate_deepseek_full(system_msg, user_msg, max_new_tokens)
-    return generate_qwen_full(system_msg, user_msg, max_new_tokens)
 
 # ─────────────────────────────────────────────
 # M4 · MEMORIA CONVERSACIONAL
@@ -571,9 +422,9 @@ Genera un JSON con:
 "lang": idioma detectado "es" o "en" (string)
 Solo JSON sin markdown."""
     
-    if _is_qwen() or _is_deepseek():
+    if st.session_state.get("use_qwen", False):
         try:
-            raw = _local_generate_full("Eres un experto en acreditación CNA. Responde solo con JSON.", prompt_text, max_new_tokens=350)
+            raw = generate_qwen_full("Eres un experto en acreditación CNA. Responde solo con JSON.", prompt_text, max_new_tokens=350)
             data = clean_json(raw)
             return {"rewritten": data.get("rewritten", query), "hyde": data.get("hyde", ""), "keywords": data.get("keywords", []), "lang": data.get("lang", "es")}
         except Exception:
@@ -697,9 +548,9 @@ def route_query(query: str) -> str:
 Pregunta: {query}
 Responde solo con la clave (estadistica/normativa/proceso/comparacion/sintesis/general)."""
     
-    if _is_qwen() or _is_deepseek():
+    if st.session_state.get("use_qwen", False):
         try:
-            raw = _local_generate_full("Clasifica preguntas. Responde solo con una palabra.", prompt_text, max_new_tokens=20)
+            raw = generate_qwen_full("Clasifica preguntas. Responde solo con una palabra.", prompt_text, max_new_tokens=20)
             agent = raw.strip().lower().split()[0] if raw.strip() else "general"
             return agent if agent in AGENT_TYPES else "general"
         except Exception:
@@ -721,9 +572,9 @@ Clasifica:
 "retroalimentacion" si el usuario corrige, mejora o complementa la respuesta anterior
 JSON: {{"tipo": "pregunta" o "retroalimentacion"}}"""
     
-    if _is_qwen() or _is_deepseek():
+    if st.session_state.get("use_qwen", False):
         try:
-            raw = _local_generate_full("Clasifica intenciones. Responde solo con JSON.", prompt_llm, max_new_tokens=50)
+            raw = generate_qwen_full("Clasifica intenciones. Responde solo con JSON.", prompt_llm, max_new_tokens=50)
             data = clean_json(raw)
             return data.get("tipo", "pregunta")
         except Exception:
@@ -736,7 +587,7 @@ JSON: {{"tipo": "pregunta" o "retroalimentacion"}}"""
         return "pregunta"
 
 # ─────────────────────────────────────────────
-# M6 · ANSWER AGENT v2
+# M6 · ANSWER AGENT v2 — CON STREAMING Y CITAS INLINE + QWEN LOCAL
 # ─────────────────────────────────────────────
 class AnswerAgentV2:
     def _build_messages(self, query, context, memory_ctx, agent_type, sources):
@@ -760,8 +611,8 @@ PREGUNTA DEL USUARIO:
 
     def stream(self, query: str, context: str, memory_ctx: str, agent_type: str, sources: list[str]) -> Generator[str, None, None]:
         system_msg, user_msg = self._build_messages(query, context, memory_ctx, agent_type, sources)
-        if _is_qwen() or _is_deepseek():
-            yield from _local_generate_response(system_msg, user_msg)
+        if st.session_state.get("use_qwen", False):
+            yield from generate_qwen_response(system_msg, user_msg)
         else:
             yield from self._stream_groq(system_msg, user_msg)
 
@@ -786,8 +637,8 @@ RETROALIMENTACIÓN/CORRECCIÓN DEL USUARIO: {query}
 CONTEXTO DOCUMENTAL ACTUALIZADO: {context}
 Genera una respuesta CORREGIDA que:
 Integre la corrección del usuario. Use solo información del contexto documental. Sea más precisa que la anterior."""
-        if _is_qwen() or _is_deepseek():
-            return _local_generate_full("Eres ChatAcredita. Corrige la respuesta anterior.", correction_prompt)
+        if st.session_state.get("use_qwen", False):
+            return generate_qwen_full("Eres ChatAcredita. Corrige la respuesta anterior.", correction_prompt)
         try:
             r = client.chat.completions.create(model=DEFAULT_MODEL, messages=[{"role": "user", "content": correction_prompt}], temperature=0.15, max_tokens=900)
             return r.choices[0].message.content
@@ -807,9 +658,9 @@ Evalúa en escala 0.0 a 1.0 y responde SOLO con JSON:
     
     default_scores = {"faithfulness": 0.8, "answer_relevance": 0.8, "context_precision": 0.7, "hallucination_risk": 0.2}
     
-    if _is_qwen() or _is_deepseek():
+    if st.session_state.get("use_qwen", False):
         try:
-            raw = _local_generate_full("Evalúa respuestas RAG. Responde solo con JSON.", eval_prompt, max_new_tokens=150)
+            raw = generate_qwen_full("Evalúa respuestas RAG. Responde solo con JSON.", eval_prompt, max_new_tokens=150)
             scores = clean_json(raw)
             for k in default_scores:
                 if k not in scores or not isinstance(scores[k], (int, float)):
@@ -967,10 +818,371 @@ class RAGSystemV3:
                 img_tag = f'<img src="data:image/webp;base64,{avatar_b64}" class="avatar-img">' if avatar_b64 else ""
                 status_placeholder.markdown(f'<div class="thinking-avatar {css_class}">{img_tag} <span>{text}</span></div>', unsafe_allow_html=True)
 
-        backend_label = "DeepSeek 14B" if _is_deepseek() else ("Qwen 7B" if _is_qwen() else "Groq")
+        backend_label = "Qwen 7B local" if st.session_state.get("use_qwen") else "Groq"
         show_status("status-analizando", f"🧠 Analizando intención ({backend_label})...")
         intent = classify_intent(query, last_answer)
         results["intent"] = intent
         memory_ctx = memory.get_context(messages)
         show_status("status-expandiendo", "🔄 Expandiendo consulta...")
-        rewrite
+        rewrite_data = rewrite_query(query, memory_ctx)
+        query_variants = list({query, rewrite_data["rewritten"], rewrite_data["hyde"]} - {""})
+        show_status("status-recuperando", "🔍 Recuperando información...")
+        raw_results = hybrid_search_rrf(query, query_variants, use_feedback=False)
+        if intent == "retroalimentacion":
+            fb_results = hybrid_search_rrf(query, query_variants, use_feedback=True)
+            raw_results = raw_results + fb_results
+        show_status("status-reranking", "📊 Rerankeando resultados...")
+        reranked = rerank_results(query, raw_results)
+        context = "\n\n---\n\n".join(r["text"] for r in reranked)[:4500]
+        sources = list({r["source"] for r in reranked if r["source"] != "desconocido"})
+        results["sources"] = sources
+        agent_type = route_query(query)
+        results["agent_type"] = agent_type
+        
+        if intent == "retroalimentacion" and last_answer:
+            show_status("status-corrigiendo", "🔄 Corrigiendo con tu feedback...")
+            corrected_answer = self.answer_agent.generate_correction(query, last_answer, context)
+            save_feedback_dedup(query=query, answer=corrected_answer, rating=4, tags=["correccion_automatica"], corrected=True)
+            results["corrected"] = True
+            show_status("status-evaluando", "🔬 Evaluando calidad...")
+            scores = evaluate_response(query, context, corrected_answer)
+            results["scores"] = scores
+            results["metrics"] = {"latency": round(time.time() - start, 2), "intent": intent, "corrected": True, "agent": agent_type, "chunks": len(reranked), "backend": "qwen_local" if st.session_state.get("use_qwen") else "groq"}
+            def single_token(): yield corrected_answer
+            results["tokens"] = single_token()
+            return results
+        
+        show_status("status-generando", f"✍️ Generando con {backend_label}...")
+        token_gen = self.answer_agent.stream(query=query, context=context, memory_ctx=memory_ctx, agent_type=agent_type, sources=sources)
+        results["tokens"] = token_gen
+        results["context_used"] = context[:1200]
+        results["metrics"] = {"latency": round(time.time() - start, 2), "intent": intent, "corrected": False, "agent": agent_type, "chunks": len(reranked), "context_chars": len(context), "backend": "qwen_local" if st.session_state.get("use_qwen") else "groq"}
+        return results
+
+rag_system = RAGSystemV3()
+
+# ─────────────────────────────────────────────
+# CONTADOR DE VISITAS
+# ─────────────────────────────────────────────
+COUNTER_FILE = "counter.json"
+def load_counter() -> int:
+    try:
+        with open(COUNTER_FILE, "r") as f:
+            return json.load(f).get("visits", 0)
+    except Exception:
+        return 0
+
+def save_counter(value: int):
+    try:
+        with open(COUNTER_FILE, "w") as f:
+            json.dump({"visits": value}, f)
+    except Exception:
+        pass
+
+if "counted" not in st.session_state:
+    visits = load_counter() + 1
+    save_counter(visits)
+    st.session_state.counted = True
+    st.session_state.visits = visits
+else:
+    st.session_state.visits = load_counter()
+
+# ─────────────────────────────────────────────
+# INICIALIZACIÓN DE SESSION STATE
+# ─────────────────────────────────────────────
+for key, default in [
+    ("messages", []),
+    ("metrics", {"latency": 0, "intent": "pregunta", "corrected": False, "agent": "general", "backend": "groq"}),
+    ("last_scores", {}),
+    ("pending_feedback", None),
+    ("use_qwen", False),
+    ("user", "invitado"),  # ✅ AÑADIDO para evitar KeyError
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+# ─────────────────────────────────────────────
+# INTERFAZ PRINCIPAL
+# ─────────────────────────────────────────────
+st.title("💬 Chat Académico EISC")
+for i, m in enumerate(st.session_state.messages):
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"], unsafe_allow_html=True)
+st.markdown('<div id="bottom"></div>', unsafe_allow_html=True)
+
+with st.sidebar:
+    st.markdown("### 🤖 Modelo LLM")
+    backend_options = []
+    if groq_available:
+        backend_options.append("☁️ Groq — Llama 3.3 70B")
+    backend_options.append("🖥️ Qwen 7B local — acreditación CNA")
+    
+    llm_backend = st.selectbox("Selecciona el backend de generación:", backend_options, key="llm_backend_selector", help="Groq es más rápido (API cloud). Qwen 7B es tu modelo fine-tuneado local.")
+    st.session_state.use_qwen = "Qwen" in llm_backend
+    
+    if st.session_state.use_qwen:
+        import torch
+        with st.spinner("Cargando Qwen 7B..."):
+            try:
+                qwen_model, qwen_tokenizer = load_qwen_local()
+                device_info = "CUDA" if torch.cuda.is_available() else "CPU"
+                st.success(f"✅ Qwen 7B acreditación ({device_info})")
+            except Exception as e:
+                st.error(f"❌ Error cargando Qwen: {str(e)[:100]}")
+                st.session_state.use_qwen = False
+    else:
+        if groq_available:
+            st.info(f"Usando Groq: {DEFAULT_MODEL}")
+        else:
+            st.warning("Groq no disponible, se usará Qwen local")
+            st.session_state.use_qwen = True
+    
+    st.markdown("---")
+    st.markdown("### 📁 Subir Documento")
+    uploaded_file = st.file_uploader("PDF sobre acreditación", type=["pdf"], help="Se añadirá al índice vectorial automáticamente")
+    
+    if uploaded_file:
+        if st.button("🚀 Procesar e Indexar", type="primary"):
+            with st.spinner("Extrayendo texto del PDF..."):
+                pdf_bytes = uploaded_file.read()
+                chunks, sources = process_uploaded_document(pdf_bytes, uploaded_file.name)
+            if chunks:
+                st.success(f"✅ {len(chunks)} chunks extraídos de '{uploaded_file.name}'")
+                with st.expander("👁️ Preview de los primeros 3 chunks", expanded=False):
+                    for i, c in enumerate(chunks[:3]):
+                        st.caption(f"Chunk {i+1} ({len(c)} chars)")
+                        st.code(c[:250] + ("..." if len(c) > 250 else ""), language=None)
+                with st.spinner("Generando embeddings y subiendo a Qdrant..."):
+                    if add_chunks_to_qdrant(chunks, sources):
+                        build_bm25_index.clear()
+                        st.balloons()
+                        try:
+                            col_info = qdrant.get_collection(COLLECTION_NAME)
+                            st.info(f"📊 Total de chunks en Qdrant: {col_info.points_count}")
+                        except Exception:
+                            pass
+            else:
+                st.warning("⚠️ No se extrajeron chunks válidos del PDF.")
+    
+    st.markdown("---")
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        avatar_path = "data/yo.webp"
+        if os.path.exists(avatar_path):
+            st.image(avatar_path, width=70)
+        else:
+            st.markdown("👤")
+    with col2:
+        # ✅ Acceso seguro con .get()
+        user_display = st.session_state.get("user", "invitado")
+        st.markdown(f"**{user_display}**")
+        st.caption("EISC · Univalle")
+    
+    st.markdown("### 📊 Métricas de sesión")
+    metrics = st.session_state.metrics
+    st.metric("⏱️ Latencia", f"{metrics.get('latency', 0)} s")
+    st.metric("🤖 Backend", metrics.get('backend', 'groq').upper())
+    st.metric("🎯 Agente", metrics.get('agent', 'general').capitalize())
+    st.metric("🔍 Intención", metrics.get('intent', 'pregunta').capitalize())
+    st.metric("📚 Chunks usados", metrics.get('chunks', 0))
+    st.metric("👥 Visitas", st.session_state.visits)
+    
+    if st.session_state.last_scores:
+        st.markdown("### 🔬 Calidad de última respuesta")
+        scores = st.session_state.last_scores
+        st.progress(scores.get("faithfulness", 0.8), text=f"Faithfulness: {scores.get('faithfulness', 0.8):.0%}")
+        st.progress(scores.get("answer_relevance", 0.8), text=f"Relevance: {scores.get('answer_relevance', 0.8):.0%}")
+        st.progress(scores.get("context_precision", 0.7), text=f"Precisión ctx: {scores.get('context_precision', 0.7):.0%}")
+        halluc = scores.get("hallucination_risk", 0.2)
+        color = "🟢" if halluc < 0.3 else ("🟡" if halluc < 0.5 else "🔴")
+        st.caption(f"{color} Riesgo de alucinación: {halluc:.0%}")
+    
+    st.markdown("---")
+    if st.button("🗑️ Limpiar historial", use_container_width=True):
+        st.session_state.messages = []
+        st.session_state.last_scores = {}
+        st.rerun()
+    
+    st.markdown("---")
+    with st.expander("🔧 Diagnóstico del índice", expanded=False):
+        try:
+            col_info = qdrant.get_collection(COLLECTION_NAME)
+            total_points = col_info.points_count
+            st.metric("Total de chunks indexados", total_points)
+            if total_points == 0:
+                st.error("❌ La colección está vacía. Ningún documento ha sido indexado.")
+            else:
+                st.markdown("**Documentos indexados:**")
+                sources_found = set()
+                offset_diag = None
+                try:
+                    while True:
+                        res = qdrant.scroll(collection_name=COLLECTION_NAME, limit=200, offset=offset_diag, with_payload=["source"], with_vectors=False)
+                        for pt in res[0]:
+                            sources_found.add(pt.payload.get("source", "desconocido"))
+                        offset_diag = res[1]
+                        if offset_diag is None:
+                            break
+                except Exception:
+                    pass
+                if sources_found:
+                    for src in sorted(sources_found):
+                        st.caption(f"📄 {src}")
+                else:
+                    st.caption("Sin fuentes identificadas")
+                st.markdown("**Probar búsqueda:**")
+                test_query = st.text_input("Escribe una consulta de prueba", key="diag_query", placeholder="ej: competencias del programa")
+                if test_query and st.button("🔍 Buscar", key="diag_search"):
+                    with st.spinner("Buscando..."):
+                        try:
+                            emb = embedder.encode([test_query], normalize_embeddings=True)[0]
+                            hits = qdrant.query_points(collection_name=COLLECTION_NAME, query=emb.tolist(), limit=3, with_payload=True).points
+                            if not hits:
+                                st.warning("No se encontraron resultados.")
+                            else:
+                                for j, hit in enumerate(hits):
+                                    score = round(hit.score, 4)
+                                    text = hit.payload.get("text", "")[:300]
+                                    source = hit.payload.get("source", "?")
+                                    st.markdown(f"**#{j+1}** (score: {score}) — _{source}_")
+                                    st.caption(text)
+                                    st.markdown("---")
+                                best = hits[0].score
+                                if best < 0.3:
+                                    st.error(f"⚠️ Score máximo muy bajo ({best:.2f}).")
+                                elif best < 0.5:
+                                    st.warning(f"Score moderado ({best:.2f}).")
+                                else:
+                                    st.success(f"Score bueno ({best:.2f}).")
+                        except Exception as e:
+                            st.error(f"Error en búsqueda: {str(e)[:100]}")
+        except Exception as e:
+            st.error(f"Error conectando a Qdrant: {str(e)[:100]}")
+
+# ─────────────────────────────────────────────
+# M8 · MANEJO DE INPUT CON STREAMING REAL
+# ─────────────────────────────────────────────
+avatar_b64 = get_base64_image("data/yo.webp") or ""
+prompt = st.chat_input("Escribe tu pregunta sobre acreditación EISC...")
+
+if prompt:
+    if not check_rate_limit(st.session_state.get("user", "invitado")):
+        st.warning(f"⚠️ Límite de {MAX_REQUESTS_PER_MINUTE} consultas/minuto alcanzado.")
+        st.stop()
+    
+    prompt_clean = sanitize_query(prompt)
+    last_answer = ""
+    for m in reversed(st.session_state.messages):
+        if m["role"] == "assistant":
+            last_answer = re.sub(r"<[^>]+>", " ", m.get("content", ""))[:800]
+            break
+    
+    st.session_state.messages.append({"role": "user", "content": prompt_clean})
+    with st.chat_message("user"):
+        st.markdown(prompt_clean)
+    
+    status_ph = st.empty()
+    rag_result = rag_system.run_stream(query=prompt_clean, messages=st.session_state.messages, last_answer=last_answer, status_placeholder=status_ph)
+    
+    backend_label = "Qwen 7B" if st.session_state.get("use_qwen") else "Groq"
+    img_tag = f'<img src="data:image/webp;base64,{avatar_b64}" class="avatar-img">' if avatar_b64 else ""
+    status_ph.markdown(
+    f'<div class="thinking-avatar status-generando">{img_tag} <span>✍️ Generando con {backend_label}...</span></div>',
+    unsafe_allow_html=True,
+    )
+    full_answer = ""
+    with st.chat_message("assistant"):
+        stream_placeholder = st.empty()
+        if rag_result["corrected"]:
+            for token in rag_result["tokens"]:
+                full_answer += token
+            st.markdown('<span style="color:#e65100;font-weight:bold;">✏️ Respuesta corregida según tu feedback</span>', unsafe_allow_html=True)
+            stream_placeholder.markdown(full_answer)
+        else:
+            for token in rag_result["tokens"]:
+                full_answer += token
+                stream_placeholder.markdown(full_answer + "▌")
+            stream_placeholder.markdown(full_answer)
+        
+        context_for_eval = rag_result.get("context_used", full_answer[:1200])
+        status_ph.markdown(f'<div class="thinking-avatar status-evaluando"><span>🔬 Evaluando calidad...</span></div>', unsafe_allow_html=True)
+        scores = evaluate_response(prompt_clean, context_for_eval, full_answer)
+        st.session_state.last_scores = scores
+        rag_result["metrics"]["scores"] = scores
+        
+        badge_label, badge_class = quality_badge(scores)
+        st.markdown(f'<span class="quality-badge {badge_class}">🔬 {badge_label}</span>', unsafe_allow_html=True)
+        
+        if scores.get("hallucination_risk", 0) > HALLUCINATION_THRESHOLD:
+            st.warning("⚠️ Esta respuesta podría contener información no verificada. Consulta directamente los documentos originales.")
+        
+        sources = rag_result.get("sources", [])
+        if sources:
+            st.markdown('<div class="sources-container">', unsafe_allow_html=True)
+            st.markdown("### 📚 Fuentes consultadas")
+            badges = " ".join(f'<span class="source-badge">📄 {s}</span>' for s in sources)
+            st.markdown(badges, unsafe_allow_html=True)
+            agent_type = rag_result.get("agent_type", "general")
+            backend_info = rag_result["metrics"].get("backend", "groq")
+            st.caption(f"Agente: {agent_type} · Backend: {backend_info} · Chunks: {rag_result['metrics'].get('chunks', 0)} · Latencia: {rag_result['metrics'].get('latency', 0)}s")
+            st.markdown("</div>", unsafe_allow_html=True)
+        
+        st.markdown("**¿Fue útil esta respuesta?**")
+        rating_cols = st.columns(5)
+        rating_labels = ["😞 Muy mala", "😕 Mala", "😐 Regular", "🙂 Buena", "😄 Excelente"]
+        for i, (col, label) in enumerate(zip(rating_cols, rating_labels)):
+            if col.button(label.split()[0], key=f"rating_btn_{i}_{len(st.session_state.messages)}", help=label):
+                save_feedback_dedup(query=prompt_clean, answer=full_answer, rating=i + 1, tags=[f"rating_{i+1}", agent_type])
+                st.toast(f"✅ Valoración guardada ({label.split()[1]})", icon="⭐")
+    
+    time.sleep(0.5)
+    status_ph.empty()
+    
+    display_answer = full_answer
+    if rag_result["corrected"]:
+        display_answer = '<span class="feedback-indicator">✏️ Corregido</span> <br>' + display_answer
+    if sources:
+        src_html = " ".join(f'<span class="source-badge">📄 {s}</span>' for s in sources)
+        display_answer += f'<br><br><div class="sources-container"><strong>📚 Fuentes:</strong> {src_html}</div>'
+    
+    st.session_state.messages.append({"role": "assistant", "content": display_answer})
+    st.session_state.metrics = rag_result["metrics"]
+    st.rerun()
+
+# ─────────────────────────────────────────────
+# FOOTER
+# ─────────────────────────────────────────────
+st.markdown("""
+<div class="footer">
+Universidad del Valle · Grupo GUIA · ChatAcredita PRO v3.1<br>
+RAG + Agentes + Qwen 7B local + Retroalimentación Vectorial · EISC 2025
+</div>
+""", unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────
+# SCROLL AUTOMÁTICO
+# ─────────────────────────────────────────────
+st.markdown("""
+<script>
+function scrollToBottom() {
+    const mainSection = window.parent.document.querySelector('section.main');
+    if (mainSection) mainSection.scrollTop = mainSection.scrollHeight;
+    const msgs = window.parent.document.querySelectorAll('[data-testid="stChatMessage"]');
+    if (msgs.length > 0) msgs[msgs.length - 1].scrollIntoView({ behavior: 'smooth', block: 'end' });
+    const chatContainer = window.parent.document.querySelector('[data-testid="stChatMessageContainer"]');
+    if (chatContainer) chatContainer.scrollTop = chatContainer.scrollHeight;
+    const containers = window.parent.document.querySelectorAll('.main .block-container, [data-testid="stVerticalBlock"]');
+    containers.forEach(c => { c.scrollTop = c.scrollHeight; });
+}
+scrollToBottom();
+[100, 300, 600, 1000, 1500, 2000, 3000, 5000].forEach(d => setTimeout(scrollToBottom, d));
+try {
+    const targetNode = window.parent.document.querySelector('section.main') || window.parent.document.querySelector('[data-testid="stAppViewContainer"]');
+    if (targetNode) {
+        const observer = new MutationObserver(function(mutations) { setTimeout(scrollToBottom, 100); });
+        observer.observe(targetNode, { childList: true, subtree: true });
+        setTimeout(() => observer.disconnect(), 30000);
+    }
+} catch(e) {}
+</script>
+""", unsafe_allow_html=True)
