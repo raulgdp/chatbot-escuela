@@ -1,4 +1,4 @@
-# ╔══════════════════════════════════════════════════════════════════════════════╗
+﻿# ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  ChatAcredita PRO v3.2 — RAG + Agentes + Retroalimentación Vectorial      ║
 # ║  EISC — Universidad del Valle, Cali, Colombia                             ║
 # ║  CORRECCIONES: DeepSeek device_map robusto, error handling mejorado       ║
@@ -744,4 +744,233 @@ class AnswerAgentV2:
         source_list = ", ".join(set(sources)) if sources else "documentos de acreditación"
         system_msg = f"""Eres ChatAcredita, asistente especializado en acreditación de la EISC, Universidad del Valle, Colombia.
 REGLAS ABSOLUTAS:
-Responde SOLO con
+Responde SOLO con información presente en el CONTEXTO RECUPERADO.
+Si la información no está en el contexto, di exactamente: "No encontré información sobre esto en los documentos disponibles."
+Cuando uses un dato específico del contexto, añade [Fuente: {source_list}] al final de la oración.
+NUNCA inventes datos, fechas, nombres o normativas.
+NUNCA menciones que tienes un "contexto" — habla como si conocieras los documentos.
+INSTRUCCIÓN DE FORMATO: {format_instr}"""
+        user_msg = f"""HISTORIAL CONVERSACIONAL:
+{memory_ctx if memory_ctx else "Sin historial previo."}
+CONTEXTO RECUPERADO DE DOCUMENTOS EISC:
+{context}
+PREGUNTA DEL USUARIO:
+{query}"""
+        return system_msg, user_msg
+
+    def stream(self, query: str, context: str, memory_ctx: str, agent_type: str, sources: list[str]) -> Generator[str, None, None]:
+        system_msg, user_msg = self._build_messages(query, context, memory_ctx, agent_type, sources)
+        if _is_qwen() or _is_deepseek():
+            yield from _local_generate_response(system_msg, user_msg)
+        else:
+            yield from self._stream_groq(system_msg, user_msg)
+
+    def _stream_groq(self, system_msg: str, user_msg: str) -> Generator[str, None, None]:
+        try:
+            stream = client.chat.completions.create(
+                model=DEFAULT_MODEL,
+                messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
+                temperature=0.2, max_tokens=1000, stream=True,
+            )
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
+        except Exception as e:
+            yield f"⚠️ Error Groq: {str(e)[:120]}"
+
+    def generate_correction(self, query: str, last_answer: str, context: str) -> str:
+        correction_prompt = f"""El usuario señaló un problema con esta respuesta previa:
+RESPUESTA PREVIA: {last_answer[:600]}
+RETROALIMENTACIÓN/CORRECCIÓN DEL USUARIO: {query}
+CONTEXTO DOCUMENTAL ACTUALIZADO: {context}
+Genera una respuesta CORREGIDA que:
+Integre la corrección del usuario. Use solo información del contexto documental. Sea más precisa que la anterior."""
+        if _is_qwen() or _is_deepseek():
+            return _local_generate_full("Eres ChatAcredita. Corrige la respuesta anterior.", correction_prompt)
+        try:
+            r = client.chat.completions.create(model=DEFAULT_MODEL, messages=[{"role": "user", "content": correction_prompt}], temperature=0.15, max_tokens=900)
+            return r.choices[0].message.content
+        except Exception as e:
+            return f"⚠️ Error en corrección: {str(e)[:100]}"
+
+# ─────────────────────────────────────────────
+# M7 · EVALUADOR DE CALIDAD (RAGAS-LITE)
+# ─────────────────────────────────────────────
+def evaluate_response(query: str, context: str, answer: str) -> dict:
+    eval_prompt = f"""Evalúa esta respuesta de un sistema RAG sobre acreditación universitaria.
+PREGUNTA: {query}
+CONTEXTO RECUPERADO: {context[:1200]}
+RESPUESTA GENERADA: {answer[:700]}
+Evalúa en escala 0.0 a 1.0 y responde SOLO con JSON:
+{{"faithfulness": <float>, "answer_relevance": <float>, "context_precision": <float>, "hallucination_risk": <float>}}"""
+    
+    default_scores = {"faithfulness": 0.8, "answer_relevance": 0.8, "context_precision": 0.7, "hallucination_risk": 0.2}
+    
+    if _is_qwen() or _is_deepseek():
+        try:
+            raw = _local_generate_full("Evalúa respuestas RAG. Responde solo con JSON.", eval_prompt, max_new_tokens=150)
+            scores = clean_json(raw)
+            for k in default_scores:
+                if k not in scores or not isinstance(scores[k], (int, float)):
+                    scores[k] = default_scores[k]
+            _log_evaluation_async(query, scores)
+            return scores
+        except Exception:
+            return default_scores
+    
+    try:
+        r = client.chat.completions.create(model=FAST_MODEL, messages=[{"role": "user", "content": eval_prompt}], temperature=0, max_tokens=150)
+        scores = clean_json(r.choices[0].message.content)
+        for k in default_scores:
+            if k not in scores or not isinstance(scores[k], (int, float)):
+                scores[k] = default_scores[k]
+        _log_evaluation_async(query, scores)
+        return scores
+    except Exception:
+        return default_scores
+
+def _log_evaluation_async(query: str, scores: dict):
+    try:
+        emb = embedder.encode([query], normalize_embeddings=True)[0]
+        qdrant.upsert(
+            collection_name=EVAL_COLLECTION,
+            points=[PointStruct(
+                id=str(uuid.uuid4()),
+                vector=emb.tolist(),
+                payload={"query": query, "scores": scores, "timestamp": time.time(), "user": st.session_state.get("user", "unknown")},
+            )]
+        )
+    except Exception:
+        pass
+
+def quality_badge(scores: dict) -> tuple[str, str]:
+    faith = scores.get("faithfulness", 0.8)
+    halluc = scores.get("hallucination_risk", 0.2)
+    if faith >= 0.8 and halluc <= 0.2:
+        return "Alta confianza", "q-high"
+    elif faith >= 0.6 and halluc <= 0.4:
+        return "Confianza media", "q-med"
+    else:
+        return "Verificar respuesta", "q-low"
+
+# ─────────────────────────────────────────────
+# M9 · FEEDBACK ENRIQUECIDO CON DEDUPLICACIÓN VECTORIAL
+# ─────────────────────────────────────────────
+def save_feedback_dedup(query: str, answer: str, rating: int, tags: list[str], corrected: bool = False) -> str:
+    combined = f"PREGUNTA: {query}\n\nRESPUESTA: {answer[:500]}"
+    emb = embedder.encode([combined], normalize_embeddings=True)[0]
+    
+    try:
+        existing = qdrant.query_points(
+            collection_name=FEEDBACK_COLLECTION,
+            query=emb.tolist(),
+            limit=1,
+            with_payload=True,
+        ).points
+        
+        if existing and existing[0].score > 0.92:
+            old = existing[0].payload
+            old_rating = old.get("rating", rating)
+            old_votes = old.get("votes", 1)
+            new_rating = round((old_rating * old_votes + rating) / (old_votes + 1), 2)
+            qdrant.set_payload(
+                collection_name=FEEDBACK_COLLECTION,
+                payload={"rating": new_rating, "votes": old_votes + 1, "tags": list(set(old.get("tags", []) + tags)), "last_vote": time.time()},
+                points=[existing[0].id],
+            )
+            return "updated"
+        
+        qdrant.upsert(
+            collection_name=FEEDBACK_COLLECTION,
+            points=[PointStruct(
+                id=str(uuid.uuid4()),
+                vector=emb.tolist(),
+                payload={
+                    "text": combined, "query": query, "answer": answer[:600],
+                    "source": "feedback_usuario", "type": "respuesta_corregida" if corrected else "valoracion",
+                    "rating": rating, "tags": tags, "votes": 1,
+                    "timestamp": time.time(), "user": st.session_state.get("user", "unknown"),
+                },
+            )],
+        )
+        return "created"
+    except Exception:
+        return "error"
+
+# ─────────────────────────────────────────────
+# M12 · PROCESAMIENTO ASYNC DE DOCUMENTOS
+# ─────────────────────────────────────────────
+def embed_chunks_parallel(chunks: list[str], batch_size: int = 32) -> np.ndarray:
+    batches = [chunks[i:i + batch_size] for i in range(0, len(chunks), batch_size)]
+    def embed_batch(batch):
+        return embedder.encode(batch, normalize_embeddings=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(embed_batch, batches))
+    return np.vstack(results)
+
+def process_uploaded_document(pdf_bytes: bytes, filename: str) -> tuple[list, list]:
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(pdf_bytes)
+            tmp_path = tmp.name
+        doc = fitz.open(tmp_path)
+        all_text = pymupdf4llm.to_markdown(doc)
+        doc.close()
+        os.unlink(tmp_path)
+        
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000, chunk_overlap=200,
+            separators=["\n\n## ", "\n\n### ", "\n\n#### ", "\n\n| ", "\n\n", "\n", " ", ""],
+            is_separator_regex=False,
+        )
+        chunks = splitter.split_text(all_text)
+        valid = [c.strip() for c in chunks if len(c.strip()) > 80 and not c.strip().endswith("|") and not c.strip().endswith("[TABLA")]
+        return valid, [filename] * len(valid)
+    except Exception as e:
+        st.error(f"❌ Error procesando PDF: {str(e)[:120]}")
+        return [], []
+
+def add_chunks_to_qdrant(chunks: list[str], sources: list[str]) -> bool:
+    try:
+        normalized = [normalize_text(c) for c in chunks]
+        embeddings = embed_chunks_parallel(normalized)
+        points = [
+            PointStruct(
+                id=str(uuid.uuid4()),
+                vector=embeddings[i].tolist(),
+                payload={"text": normalized[i], "source": sources[i], "chunk_id": i, "type": "documento_subido", "timestamp": time.time()},
+            )
+            for i in range(len(normalized))
+        ]
+        qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
+        st.success(f"✅ {len(points)} chunks añadidos a Qdrant")
+        return True
+    except Exception as e:
+        st.error(f"❌ Error subiendo a Qdrant: {str(e)[:120]}")
+        return False
+
+# ─────────────────────────────────────────────
+# SISTEMA RAG PRINCIPAL
+# ─────────────────────────────────────────────
+class RAGSystemV3:
+    def __init__(self):
+        self.answer_agent = AnswerAgentV2()
+
+    def run_stream(self, query: str, messages: list, last_answer: str = "", status_placeholder=None) -> dict:
+        start = time.time()
+        results = {"tokens": None, "sources": [], "metrics": {}, "scores": {}, "intent": "pregunta", "corrected": False, "agent_type": "general"}
+
+        def show_status(css_class: str, text: str):
+            if status_placeholder:
+                avatar_b64 = get_base64_image("data/yo.webp") or ""
+                img_tag = f'<img src="data:image/webp;base64,{avatar_b64}" class="avatar-img">' if avatar_b64 else ""
+                status_placeholder.markdown(f'<div class="thinking-avatar {css_class}">{img_tag} <span>{text}</span></div>', unsafe_allow_html=True)
+
+        backend_label = "DeepSeek 14B" if _is_deepseek() else ("Qwen 7B" if _is_qwen() else "Groq")
+        show_status("status-analizando", f"🧠 Analizando intención ({backend_label})...")
+        intent = classify_intent(query, last_answer)
+        results["intent"] = intent
+        memory_ctx = memory.get_context(messages)
+        show_status("status-expandiendo", "🔄 Expandiendo consulta...")
+        rewrite
