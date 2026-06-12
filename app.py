@@ -33,7 +33,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 # ─────────────────────────────────────────────
 try:
     import torch
-except Exception as e:
+except Exception:
     torch = None
 
 # ─────────────────────────────────────────────
@@ -705,4 +705,4 @@ if prompt:
             st.markdown("### 📚 Fuentes consultadas")
             badges = " ".join(f'<span class="source-badge">📄 {s}</span>' for s in sources)
             st.markdown(badges, unsafe_allow_html=True)
-            st.caption(f"Agente: {rag_result.get('agent_type', 'general')} · Chunks: {rag_result['metrics'].get('chunks', 0)} · Latencia: {rag
+            st.caption(f"Agente: {rag_result.get('agent_type', 'general')} · Chunks: {rag_result['metrics'].get('chunks', 0)} · Latencia: {rag_result['
