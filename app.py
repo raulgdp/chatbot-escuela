@@ -39,7 +39,15 @@ except Exception as e:
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN GROQ (PRINCIPAL)
 # ─────────────────────────────────────────────
-OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "").strip() if 'get_secret' in dir() else st.secrets.get("OPENAI_API_KEY", "").strip()
+def get_secret(key: str, default: str = "") -> str:
+    try:
+        if hasattr(st, 'secrets') and key in st.secrets:
+            return st.secrets[key]
+        return os.getenv(key, default)
+    except Exception:
+        return default
+
+OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "").strip()
 OPENAI_API_BASE = "https://api.groq.com/openai/v1"
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
 FAST_MODEL = "llama-3.3-70b-versatile"
@@ -140,14 +148,6 @@ def clean_json(text: str) -> dict:
     except Exception:
         return {}
 
-def get_secret(key: str, default: str = "") -> str:
-    try:
-        if hasattr(st, 'secrets') and key in st.secrets:
-            return st.secrets[key]
-        return os.getenv(key, default)
-    except Exception:
-        return default
-
 # ─────────────────────────────────────────────
 # CSS + HEADER
 # ─────────────────────────────────────────────
@@ -179,10 +179,6 @@ header {visibility: hidden;}
 .status-reranking   { background:#fff8e1; border-left:3px solid #ffc107;  color:#f57f17; }
 .status-generando   { background:#f3e5f5; border-left:3px solid #9c27b0; color:#4a148c; }
 .status-evaluando   { background:#fce4ec; border-left:3px solid #e91e63;  color:#880e4f; }
-.status-corrigiendo {
-    background:#fff3e0; border-left:4px solid #ff9800; color:#e65100;
-    animation: pulse 1.5s infinite;
-}
 .source-badge {
     display: inline-block; background:#e3f2fd; color:#1976d2;
     padding: 3px 8px; border-radius: 12px; font-size: 0.84em;
@@ -197,20 +193,15 @@ header {visibility: hidden;}
     display: inline-block; font-size: 0.78em;
     padding: 2px 7px; border-radius: 10px; margin-left: 6px;
 }
-.q-high  { background:#e8f5e9; color:#2e7d32; border:1px solid #a5d6a7; }
-.q-med   { background:#fff8e1; color:#f57f17; border:1px solid #ffe082; }
-.q-low   { background:#fce4ec; color:#c62828; border:1px solid #ef9a9a; }
-.reranker-badge {
-    display: inline-block; background:#e8eaf6; color:#3949ab;
-    padding: 2px 8px; border-radius: 12px; font-size: 0.75em;
-    margin-left: 8px; border: 1px solid #c5cae9;
-}
+.q-high { background:#e8f5e9; color:#2e7d32; border:1px solid #a5d6a7; }
+.q-med { background:#fff8e1; color:#f57f17; border:1px solid #ffe082; }
+.q-low { background:#fce4ec; color:#c62828; border:1px solid #ef9a9a; }
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div class="custom-header">
-🎓 ChatAcredita PRO v3.4 — EISC (Universidad del Valle) · Groq Llama 3.3 70B + BGE-Reranker
+🎓 ChatAcredita PRO v3.4 — EISC (Universidad del Valle) · Groq Llama 3.3 70B
 </div>
 """, unsafe_allow_html=True)
 
@@ -220,14 +211,13 @@ st.markdown("""
 groq_available = False
 client = None
 try:
-    api_key = get_secret("OPENAI_API_KEY", "")
-    if api_key:
-        client = OpenAI(api_key=api_key, base_url=OPENAI_API_BASE)
+    if OPENAI_API_KEY:
+        client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_API_BASE)
         _ = client.models.list()
         groq_available = True
         st.sidebar.success(f"✅ Groq: {DEFAULT_MODEL}")
     else:
-        st.sidebar.error("❌ OPENAI_API_KEY no configurada en Secrets")
+        st.sidebar.error("❌ OPENAI_API_KEY no configurada")
 except Exception as e:
     st.sidebar.error(f"❌ Groq: {str(e)[:80]}")
 
@@ -322,7 +312,7 @@ class ConversationMemory:
 memory = ConversationMemory()
 
 # ─────────────────────────────────────────────
-# QUERY REWRITING (Groq)
+# QUERY REWRITING
 # ─────────────────────────────────────────────
 def rewrite_query(query: str, memory_ctx: str) -> dict:
     if not groq_available or client is None:
@@ -397,7 +387,7 @@ def hybrid_search_rrf(query: str, query_variants: list[str], use_feedback: bool 
     return [{"id": pid, "text": id_to_payload[pid]["text"], "source": id_to_payload[pid].get("source", "desconocido"), "rrf_score": round(score, 4)} for pid, score in sorted_ids if id_to_payload.get(pid, {}).get("text")]
 
 # ─────────────────────────────────────────────
-# RERANKING (BGE-Reranker-v2-m3 o Heurístico)
+# RERANKING
 # ─────────────────────────────────────────────
 def rerank_results(query: str, results: list[dict]) -> list[dict]:
     if not results:
@@ -428,7 +418,7 @@ def rerank_results(query: str, results: list[dict]) -> list[dict]:
     return sorted(results, key=lambda x: x["rerank_score"], reverse=True)[:TOP_K_FINAL]
 
 # ─────────────────────────────────────────────
-# ROUTER DE AGENTES
+# AGENTES
 # ─────────────────────────────────────────────
 AGENT_PROMPTS = {
     "estadistica": "Presenta datos numéricos con precisión. Usa tablas cuando sea necesario.",
@@ -468,7 +458,7 @@ Clasifica: "pregunta" o "retroalimentacion". Solo JSON: {{"tipo": ""}}"""
         return "pregunta"
 
 # ─────────────────────────────────────────────
-# ANSWER AGENT CON GROQ
+# ANSWER AGENT
 # ─────────────────────────────────────────────
 class AnswerAgent:
     def stream(self, query: str, context: str, memory_ctx: str, agent_type: str, sources: list[str]) -> Generator[str, None, None]:
@@ -513,7 +503,7 @@ Genera respuesta corregida:"""
             return f"Error en corrección: {str(e)[:100]}"
 
 # ─────────────────────────────────────────────
-# EVALUADOR DE CALIDAD
+# EVALUADOR
 # ─────────────────────────────────────────────
 def evaluate_response(query: str, context: str, answer: str) -> dict:
     default = {"faithfulness": 0.8, "answer_relevance": 0.8, "context_precision": 0.7, "hallucination_risk": 0.2}
@@ -554,7 +544,7 @@ def save_feedback(query: str, answer: str, rating: int, tags: list[str]):
         pass
 
 # ─────────────────────────────────────────────
-# SISTEMA RAG PRINCIPAL
+# RAG SYSTEM
 # ─────────────────────────────────────────────
 class RAGSystem:
     def __init__(self):
@@ -629,8 +619,6 @@ for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"], unsafe_allow_html=True)
 
-st.markdown('<div id="bottom"></div>', unsafe_allow_html=True)
-
 # Sidebar
 with st.sidebar:
     st.markdown("### 🤖 Modelo LLM")
@@ -662,9 +650,8 @@ with st.sidebar:
         st.rerun()
 
 # ─────────────────────────────────────────────
-# MANEJO DE INPUT CON STREAMING
+# INPUT Y RESPUESTA
 # ─────────────────────────────────────────────
-avatar_b64 = get_base64_image("data/yo.webp") or ""
 prompt = st.chat_input("Escribe tu pregunta sobre acreditación EISC...")
 
 if prompt:
@@ -686,7 +673,7 @@ if prompt:
     status_ph = st.empty()
     rag_result = rag_system.run_stream(query=prompt_clean, messages=st.session_state.messages, last_answer=last_answer, status_placeholder=status_ph)
     
-    status_ph.markdown(f'<div class="thinking-avatar status-generando"><span>✍️ Generando respuesta...</span></div>', unsafe_allow_html=True)
+    status_ph.markdown('<div class="thinking-avatar status-generando"><span>✍️ Generando respuesta...</span></div>', unsafe_allow_html=True)
     
     full_answer = ""
     with st.chat_message("assistant"):
@@ -704,4 +691,18 @@ if prompt:
         
         context_for_eval = full_answer[:1200]
         scores = evaluate_response(prompt_clean, context_for_eval, full_answer)
-        st.session_state.last_scores =
+        st.session_state.last_scores = scores
+        
+        badge_label, badge_class = quality_badge(scores)
+        st.markdown(f'<span class="quality-badge {badge_class}">🔬 {badge_label}</span>', unsafe_allow_html=True)
+        
+        if scores.get("hallucination_risk", 0) > HALLUCINATION_THRESHOLD:
+            st.warning("⚠️ Esta respuesta podría contener información no verificada.")
+        
+        sources = rag_result.get("sources", [])
+        if sources:
+            st.markdown('<div class="sources-container">', unsafe_allow_html=True)
+            st.markdown("### 📚 Fuentes consultadas")
+            badges = " ".join(f'<span class="source-badge">📄 {s}</span>' for s in sources)
+            st.markdown(badges, unsafe_allow_html=True)
+            st.caption(f"Agente: {rag_result.get('agent_type', 'general')} · Chunks: {rag_result['metrics'].get('chunks', 0)} · Lat
