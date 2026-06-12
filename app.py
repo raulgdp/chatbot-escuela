@@ -1,4 +1,4 @@
-﻿# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  ChatAcredita PRO v3.4 — RAG + Agentes + Retroalimentación Vectorial      ║
 # ║  + BGE-Reranker-v2-m3 (neuronal) + Groq Llama 3.3 70B                      ║
 # ║  EISC — Universidad del Valle, Cali, Colombia                             ║
@@ -39,7 +39,7 @@ except Exception as e:
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN GROQ (PRINCIPAL)
 # ─────────────────────────────────────────────
-OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "").strip() if hasattr(st, 'secrets') else os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "").strip() if 'get_secret' in dir() else st.secrets.get("OPENAI_API_KEY", "").strip()
 OPENAI_API_BASE = "https://api.groq.com/openai/v1"
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
 FAST_MODEL = "llama-3.3-70b-versatile"
@@ -218,9 +218,11 @@ st.markdown("""
 # CONEXIÓN APIs — Groq
 # ─────────────────────────────────────────────
 groq_available = False
+client = None
 try:
-    if OPENAI_API_KEY:
-        client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_API_BASE)
+    api_key = get_secret("OPENAI_API_KEY", "")
+    if api_key:
+        client = OpenAI(api_key=api_key, base_url=OPENAI_API_BASE)
         _ = client.models.list()
         groq_available = True
         st.sidebar.success(f"✅ Groq: {DEFAULT_MODEL}")
@@ -233,6 +235,7 @@ except Exception as e:
 # CONEXIÓN Qdrant
 # ─────────────────────────────────────────────
 qdrant_available = False
+qdrant = None
 try:
     qdrant_url = get_secret("QDRANT_URL", "").strip()
     qdrant_key = get_secret("QDRANT_API_KEY", "").strip()
@@ -278,55 +281,6 @@ else:
     st.sidebar.info("✅ BGE-M3 (modo heurístico)")
 
 # ─────────────────────────────────────────────
-# MODELOS LOCALES (Qwen/DeepSeek) - Opcionales
-# ─────────────────────────────────────────────
-QWEN_MODEL_ID = "raulgdp/qwen2.5-7b-acredita-cna-col"
-DEEPSEEK_MODEL_ID = "raulgdp/deepseek14b-acredita"
-
-@st.cache_resource(show_spinner="🤖 Cargando Qwen 7B...")
-def load_qwen_local():
-    if torch is None:
-        return None, None
-    try:
-        from transformers import AutoTokenizer, AutoModelForCausalLM
-        tokenizer = AutoTokenizer.from_pretrained(QWEN_MODEL_ID, trust_remote_code=True)
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.padding_side = "left"
-        model = AutoModelForCausalLM.from_pretrained(
-            QWEN_MODEL_ID,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto" if torch.cuda.is_available() else None,
-            trust_remote_code=True,
-        )
-        model.eval()
-        return model, tokenizer
-    except Exception:
-        return None, None
-
-@st.cache_resource(show_spinner="🤖 Cargando DeepSeek 14B...")
-def load_deepseek_local():
-    if torch is None:
-        return None, None
-    try:
-        from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-        tokenizer = AutoTokenizer.from_pretrained(DEEPSEEK_MODEL_ID, trust_remote_code=True)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        if torch.cuda.is_available():
-            bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
-            model = AutoModelForCausalLM.from_pretrained(
-                DEEPSEEK_MODEL_ID, quantization_config=bnb_config, device_map="auto", trust_remote_code=True
-            )
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
-                DEEPSEEK_MODEL_ID, torch_dtype=torch.float32, trust_remote_code=True
-            )
-        model.eval()
-        return model, tokenizer
-    except Exception:
-        return None, None
-
-# ─────────────────────────────────────────────
 # MEMORIA CONVERSACIONAL
 # ─────────────────────────────────────────────
 class ConversationMemory:
@@ -345,7 +299,7 @@ class ConversationMemory:
 
     def _summarize(self, messages: list) -> str:
         dialog = self._format(messages)
-        if not groq_available:
+        if not groq_available or client is None:
             return "[historial previo disponible]"
         try:
             r = client.chat.completions.create(
@@ -368,9 +322,12 @@ class ConversationMemory:
 memory = ConversationMemory()
 
 # ─────────────────────────────────────────────
-# QUERY REWRITING (Groq o Local)
+# QUERY REWRITING (Groq)
 # ─────────────────────────────────────────────
-def rewrite_query_groq(query: str, memory_ctx: str) -> dict:
+def rewrite_query(query: str, memory_ctx: str) -> dict:
+    if not groq_available or client is None:
+        return {"rewritten": query, "hyde": "", "keywords": [], "lang": "es"}
+    
     prompt = f"""Contexto: {memory_ctx[-600:] if memory_ctx else 'Sin historial'}
 Query: {query}
 Responde SOLO con JSON: {{"rewritten": "", "hyde": "", "keywords": [], "lang": "es"}}"""
@@ -379,11 +336,6 @@ Responde SOLO con JSON: {{"rewritten": "", "hyde": "", "keywords": [], "lang": "
         return clean_json(r.choices[0].message.content)
     except Exception:
         return {"rewritten": query, "hyde": "", "keywords": [], "lang": "es"}
-
-def rewrite_query(query: str, memory_ctx: str) -> dict:
-    if groq_available:
-        return rewrite_query_groq(query, memory_ctx)
-    return {"rewritten": query, "hyde": "", "keywords": [], "lang": "es"}
 
 # ─────────────────────────────────────────────
 # ÍNDICE BM25
@@ -488,32 +440,32 @@ AGENT_PROMPTS = {
 }
 
 def route_query(query: str) -> str:
+    if not groq_available or client is None:
+        return "general"
     prompt = f"""Clasifica: estadistica, normativa, proceso, comparacion, sintesis, general.
 Pregunta: {query}
 Responde solo con una palabra."""
-    if groq_available:
-        try:
-            r = client.chat.completions.create(model=FAST_MODEL, messages=[{"role": "user", "content": prompt}], temperature=0, max_tokens=20)
-            agent = r.choices[0].message.content.strip().lower()
-            return agent if agent in AGENT_PROMPTS else "general"
-        except Exception:
-            return "general"
-    return "general"
+    try:
+        r = client.chat.completions.create(model=FAST_MODEL, messages=[{"role": "user", "content": prompt}], temperature=0, max_tokens=20)
+        agent = r.choices[0].message.content.strip().lower()
+        return agent if agent in AGENT_PROMPTS else "general"
+    except Exception:
+        return "general"
 
 def classify_intent(prompt: str, last_answer: str) -> str:
     if not last_answer:
         return "pregunta"
+    if not groq_available or client is None:
+        return "pregunta"
     p = f"""Respuesta anterior: {last_answer[:300]}
 Nuevo mensaje: {prompt}
 Clasifica: "pregunta" o "retroalimentacion". Solo JSON: {{"tipo": ""}}"""
-    if groq_available:
-        try:
-            r = client.chat.completions.create(model=FAST_MODEL, messages=[{"role": "user", "content": p}], temperature=0, max_tokens=50)
-            data = clean_json(r.choices[0].message.content)
-            return data.get("tipo", "pregunta")
-        except Exception:
-            return "pregunta"
-    return "pregunta"
+    try:
+        r = client.chat.completions.create(model=FAST_MODEL, messages=[{"role": "user", "content": p}], temperature=0, max_tokens=50)
+        data = clean_json(r.choices[0].message.content)
+        return data.get("tipo", "pregunta")
+    except Exception:
+        return "pregunta"
 
 # ─────────────────────────────────────────────
 # ANSWER AGENT CON GROQ
@@ -530,7 +482,7 @@ Formato: {format_instr}"""
 Contexto: {context}
 Pregunta: {query}"""
         
-        if not groq_available:
+        if not groq_available or client is None:
             yield "❌ Groq no disponible. Verifica API key."
             return
         
@@ -548,7 +500,7 @@ Pregunta: {query}"""
             yield f"⚠️ Error: {str(e)[:100]}"
     
     def generate_correction(self, query: str, last_answer: str, context: str) -> str:
-        if not groq_available:
+        if not groq_available or client is None:
             return "Groq no disponible para corrección."
         prompt = f"""Respuesta previa: {last_answer[:500]}
 Corrección del usuario: {query}
@@ -565,7 +517,7 @@ Genera respuesta corregida:"""
 # ─────────────────────────────────────────────
 def evaluate_response(query: str, context: str, answer: str) -> dict:
     default = {"faithfulness": 0.8, "answer_relevance": 0.8, "context_precision": 0.7, "hallucination_risk": 0.2}
-    if not groq_available:
+    if not groq_available or client is None:
         return default
     prompt = f"""Evalúa: Query: {query[:300]} | Contexto: {context[:800]} | Respuesta: {answer[:500]}
 Responde SOLO JSON: {{"faithfulness": 0.0-1.0, "answer_relevance": 0.0-1.0, "context_precision": 0.0-1.0, "hallucination_risk": 0.0-1.0}}"""
@@ -610,7 +562,7 @@ class RAGSystem:
 
     def run_stream(self, query: str, messages: list, last_answer: str = "", status_placeholder=None) -> dict:
         start = time.time()
-        results = {"sources": [], "metrics": {}, "scores": {}, "intent": "pregunta", "corrected": False, "agent_type": "general"}
+        results = {"sources": [], "metrics": {}, "scores": {}, "intent": "pregunta", "corrected": False, "agent_type": "general", "tokens": None}
 
         def show_status(css_class: str, text: str):
             if status_placeholder:
@@ -628,7 +580,8 @@ class RAGSystem:
         show_status("status-recuperando", "🔍 Recuperando información...")
         raw_results = hybrid_search_rrf(query, query_variants, use_feedback=False)
         
-        show_status("status-reranking", f"📊 Reranking con {'BGE-Reranker' if reranker_model else 'heurísticas'}...")
+        reranker_name = "BGE-Reranker" if reranker_model else "heurísticas"
+        show_status("status-reranking", f"📊 Reranking con {reranker_name}...")
         reranked = rerank_results(query, raw_results)
         context = "\n\n---\n\n".join(r["text"] for r in reranked)[:4500]
         sources = list({r["source"] for r in reranked if r["source"] != "desconocido"})
@@ -645,6 +598,8 @@ class RAGSystem:
             scores = evaluate_response(query, context, corrected_answer)
             results["scores"] = scores
             results["metrics"] = {"latency": round(time.time() - start, 2), "intent": intent, "corrected": True, "agent": agent_type, "chunks": len(reranked)}
+            def gen(): yield corrected_answer
+            results["tokens"] = gen()
             return results
         
         show_status("status-generando", "✍️ Generando respuesta con Groq Llama 3.3...")
@@ -674,6 +629,8 @@ for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"], unsafe_allow_html=True)
 
+st.markdown('<div id="bottom"></div>', unsafe_allow_html=True)
+
 # Sidebar
 with st.sidebar:
     st.markdown("### 🤖 Modelo LLM")
@@ -692,4 +649,59 @@ with st.sidebar:
     if st.session_state.last_scores:
         st.markdown("### 🔬 Calidad última respuesta")
         scores = st.session_state.last_scores
-        st.progress(scores.get("faithfulness
+        st.progress(scores.get("faithfulness", 0.8), text=f"Faithfulness: {scores.get('faithfulness', 0.8):.0%}")
+        st.progress(scores.get("answer_relevance", 0.8), text=f"Relevance: {scores.get('answer_relevance', 0.8):.0%}")
+        halluc = scores.get("hallucination_risk", 0.2)
+        color = "🟢" if halluc < 0.3 else ("🟡" if halluc < 0.5 else "🔴")
+        st.caption(f"{color} Riesgo alucinación: {halluc:.0%}")
+    
+    st.markdown("---")
+    if st.button("🗑️ Limpiar historial", use_container_width=True):
+        st.session_state.messages = []
+        st.session_state.last_scores = {}
+        st.rerun()
+
+# ─────────────────────────────────────────────
+# MANEJO DE INPUT CON STREAMING
+# ─────────────────────────────────────────────
+avatar_b64 = get_base64_image("data/yo.webp") or ""
+prompt = st.chat_input("Escribe tu pregunta sobre acreditación EISC...")
+
+if prompt:
+    if not check_rate_limit(st.session_state.get("user", "invitado")):
+        st.warning(f"⚠️ Límite de {MAX_REQUESTS_PER_MINUTE} consultas/minuto alcanzado.")
+        st.stop()
+    
+    prompt_clean = sanitize_query(prompt)
+    last_answer = ""
+    for m in reversed(st.session_state.messages):
+        if m["role"] == "assistant":
+            last_answer = re.sub(r"<[^>]+>", " ", m.get("content", ""))[:800]
+            break
+    
+    st.session_state.messages.append({"role": "user", "content": prompt_clean})
+    with st.chat_message("user"):
+        st.markdown(prompt_clean)
+    
+    status_ph = st.empty()
+    rag_result = rag_system.run_stream(query=prompt_clean, messages=st.session_state.messages, last_answer=last_answer, status_placeholder=status_ph)
+    
+    status_ph.markdown(f'<div class="thinking-avatar status-generando"><span>✍️ Generando respuesta...</span></div>', unsafe_allow_html=True)
+    
+    full_answer = ""
+    with st.chat_message("assistant"):
+        stream_placeholder = st.empty()
+        if rag_result.get("corrected", False):
+            for token in rag_result["tokens"]:
+                full_answer += token
+            st.markdown('<span style="color:#e65100;font-weight:bold;">✏️ Respuesta corregida según tu feedback</span>', unsafe_allow_html=True)
+            stream_placeholder.markdown(full_answer)
+        else:
+            for token in rag_result["tokens"]:
+                full_answer += token
+                stream_placeholder.markdown(full_answer + "▌")
+            stream_placeholder.markdown(full_answer)
+        
+        context_for_eval = full_answer[:1200]
+        scores = evaluate_response(prompt_clean, context_for_eval, full_answer)
+        st.session_state.last_scores =
